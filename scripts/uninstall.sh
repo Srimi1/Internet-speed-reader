@@ -5,12 +5,14 @@ set -euo pipefail
 BUNDLE_ID="com.srimi.internetspeedreader"
 APP="/Applications/InternetSpeedReader.app"
 
-echo "NOTE: turn off 'Launch at login' in the app's Settings before uninstalling,"
-echo "      otherwise a stale login item stays registered in the background task database."
-echo
-
 osascript -e 'tell application "InternetSpeedReader" to quit' 2>/dev/null || true
 sleep 1
+
+# Deregister the login item while the bundle still exists; the background task
+# database keys off the bundle, so this must happen before the app is deleted.
+if [ -x "$APP/Contents/MacOS/InternetSpeedReader" ]; then
+  "$APP/Contents/MacOS/InternetSpeedReader" --unregister-login-item || true
+fi
 
 rm -rf "$APP"
 rm -rf "$HOME/Library/Application Support/$BUNDLE_ID"

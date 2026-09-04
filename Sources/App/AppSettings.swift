@@ -12,7 +12,7 @@ final class AppSettings {
         case notifyOnDrop, notifyOnRestore, notifyAfterSeconds, minimumOutageSeconds
         case downloadStreams, uploadStreams, phaseSeconds, dataSaver, confirmOnMetered
         case appleMaxSeconds, reopenPanelOnFinish
-        case didOfferLaunchAtLogin
+        case launchAtLoginWanted
     }
 
     enum RefreshPolicy: String, CaseIterable {
@@ -46,9 +46,10 @@ final class AppSettings {
     var confirmOnMetered: Bool { didSet { set(confirmOnMetered, .confirmOnMetered) } }
     var appleMaxSeconds: Int { didSet { set(appleMaxSeconds, .appleMaxSeconds) } }
     var reopenPanelOnFinish: Bool { didSet { set(reopenPanelOnFinish, .reopenPanelOnFinish) } }
-    /// Set once the app has registered itself at login on first run, so a user who later
-    /// turns it off is not fought with on every launch.
-    var didOfferLaunchAtLogin: Bool { didSet { set(didOfferLaunchAtLogin, .didOfferLaunchAtLogin) } }
+    /// The user's intent, separate from what the system currently has registered. On by
+    /// default because the app is meant to just be there; the system registration is
+    /// re-applied on every launch because reinstalling the bundle silently invalidates it.
+    var launchAtLoginWanted: Bool { didSet { set(launchAtLoginWanted, .launchAtLoginWanted) } }
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -67,7 +68,7 @@ final class AppSettings {
         confirmOnMetered = defaults.object(forKey: Key.confirmOnMetered.rawValue) as? Bool ?? true
         appleMaxSeconds = defaults.object(forKey: Key.appleMaxSeconds.rawValue) as? Int ?? 15
         reopenPanelOnFinish = defaults.object(forKey: Key.reopenPanelOnFinish.rawValue) as? Bool ?? true
-        didOfferLaunchAtLogin = defaults.object(forKey: Key.didOfferLaunchAtLogin.rawValue) as? Bool ?? false
+        launchAtLoginWanted = defaults.object(forKey: Key.launchAtLoginWanted.rawValue) as? Bool ?? true
     }
 
     private func set(_ value: Any, _ key: Key) {

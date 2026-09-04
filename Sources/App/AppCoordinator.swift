@@ -46,7 +46,7 @@ final class AppCoordinator {
     func start() {
         notifications.bootstrap()
         loginItem.refresh()
-        enableLaunchAtLoginOnFirstRun()
+        reconcileLaunchAtLogin()
 
         Task { [notifications] in
             await notifications.refreshAuthorizationStatus()
@@ -273,13 +273,24 @@ final class AppCoordinator {
         )
     }
 
-    /// The app is meant to just be there. It registers itself at login the first time
-    /// it runs from /Applications, exactly once, so switching it off in Settings sticks.
-    private func enableLaunchAtLoginOnFirstRun() {
-        guard !settings.didOfferLaunchAtLogin, LoginItemManager.isInApplicationsFolder else { return }
-        settings.didOfferLaunchAtLogin = true
-        if loginItem.state == .disabled {
+    /// Makes the system registration match what the user wants, every launch.
+    ///
+    /// Every launch, not just the first: the background task database records the bundle
+    /// it registered, and replacing the bundle on reinstall leaves that record pointing
+    /// at nothing. The status then reads `.notFound` and the app quietly stops launching
+    /// at login. Re-registering is idempotent, so doing it each time costs nothing.
+    private func reconcileLaunchAtLogin() {
+        guard LoginItemManager.isInApplicationsFolder else { return }
+        loginItem.refresh()
+        switch (settings.launchAtLoginWanted, loginItem.state) {
+        case (true, .enabled), (true, .requiresApproval):
+            break
+        case (true, .disabled), (true, .notFound):
             loginItem.setEnabled(true)
+        case (false, .enabled), (false, .notFound), (false, .requiresApproval):
+            loginItem.setEnabled(false)
+        case (false, .disabled):
+            break
         }
     }
 
@@ -370,7 +381,9 @@ final class AppCoordinator {
             loginItem.openSystemSettings()
             return
         }
-        loginItem.setEnabled(!loginItem.state.isOn)
+        let wanted = !loginItem.state.isOn
+        settings.launchAtLoginWanted = wanted
+        loginItem.setEnabled(wanted)
     }
 }
 
