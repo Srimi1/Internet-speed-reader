@@ -21,12 +21,18 @@ final class AppCoordinator {
     var unit: SpeedUnit = .megabitsPerSecond
     var showUnitsInBar: Bool = false
 
+    // Outages
+    var outages: [OutageRecord] = []
+    var currentOutageStart: Date?
+    var alertsPausedUntil: Date?
+
     let notifications = NotificationService()
     let loginItem = LoginItemManager()
 
     private let time: any TimeSource = SystemTimeSource()
     private let monitor = LiveThroughputMonitor()
     private let pathSource: any PathSource = NWPathSource()
+    private var outageEngine: OutageEngine?
     private var tasks: [Task<Void, Never>] = []
     private var activity: NSObjectProtocol?
 
@@ -50,15 +56,112 @@ final class AppCoordinator {
 
         beginActivity()
         observeWorkspaceNotifications()
+        startOutageEngine()
         startPathObservation()
         startLiveMeter()
     }
 
     func shutdown() {
+        if let engine = outageEngine {
+            // Synchronously give the engine a chance to close an open outage as a clean
+            // quit, so it is not later mistaken for a crash.
+            let semaphore = DispatchSemaphore(value: 0)
+            Task.detached { await engine.shutdown(); semaphore.signal() }
+            _ = semaphore.wait(timeout: .now() + 1.5)
+        }
         tasks.forEach { $0.cancel() }
         tasks.removeAll()
         if let activity { ProcessInfo.processInfo.endActivity(activity) }
         activity = nil
+    }
+
+    // MARK: - Outage engine
+
+    private func startOutageEngine() {
+        let ledger: OutageLedger
+        do {
+            ledger = try OutageLedger.makeDefault()
+        } catch {
+            Log.outage.error("cannot open outage ledger: \(error.localizedDescription, privacy: .public)")
+            return
+        }
+
+        let engine = OutageEngine(prober: HTTPProber(), ledger: ledger)
+        outageEngine = engine
+
+        tasks.append(Task { [weak self] in
+            let events = await engine.events()
+            await engine.start()
+            for await event in events {
+                guard let self else { return }
+                await self.handle(event, engine: engine)
+            }
+        })
+    }
+
+    private func handle(_ event: OutageEvent, engine: OutageEngine) async {
+        switch event {
+        case let .stateChanged(state):
+            connectionState = Self.display(for: state)
+            currentOutageStart = (state == .down || state == .captivePortal) ? currentOutageStart : nil
+
+        case let .notifyDown(record):
+            currentOutageStart = record.start
+            let interface = record.interfaceName.map { " on \($0)" } ?? ""
+            let detail = record.unsatisfiedReason ?? "No internet connection"
+            await notifications.post(
+                identifier: NotificationService.Identifier.down,
+                title: "Internet connection lost",
+                body: "\(detail)\(interface), since \(Self.timeString(record.start))."
+            )
+
+        case let .notifyUp(record):
+            let duration = DurationFormatter.humanReadable(record.duration(now: record.end ?? Date()))
+            await notifications.post(
+                identifier: NotificationService.Identifier.up,
+                title: "Internet is back",
+                body: "Restored after \(duration), down since \(Self.timeString(record.start)).",
+                replacing: [NotificationService.Identifier.down]
+            )
+
+        case .ledgerChanged:
+            outages = await engine.outages().sorted { $0.start > $1.start }
+        }
+    }
+
+    private static func display(for state: ConnectivityStateMachine.State) -> ConnectionDisplayState {
+        switch state {
+        case .unknown: return .unknown
+        case .online: return .online
+        case .suspect: return .suspect
+        case .down: return .offline
+        case .captivePortal: return .captivePortal
+        case .suspended: return .unknown
+        }
+    }
+
+    private static func timeString(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.timeStyle = .short
+        formatter.dateStyle = .none
+        return formatter.string(from: date)
+    }
+
+    func checkConnectionNow() {
+        guard let engine = outageEngine else { return }
+        Task { await engine.checkNow() }
+    }
+
+    func pauseAlerts(until date: Date?) {
+        alertsPausedUntil = date
+        guard let engine = outageEngine else { return }
+        let paused = date != nil
+        Task { await engine.setAlertsPaused(paused) }
+    }
+
+    var alertsArePaused: Bool {
+        guard let until = alertsPausedUntil else { return false }
+        return until > Date()
     }
 
     // MARK: - Live meter
@@ -103,10 +206,9 @@ final class AppCoordinator {
         let changed = selected?.index != activeInterface?.index
         activeInterface = selected
 
-        // Provisional state until the outage engine lands in M4: an unsatisfied path is
-        // trustworthy in the negative direction, but a satisfied one is not (a captive
-        // portal satisfies the path with no internet behind it).
-        connectionState = snapshot.status == .unsatisfied ? .offline : .online
+        if let engine = outageEngine {
+            Task { await engine.pathChanged(snapshot) }
+        }
 
         if changed {
             smoothedDown = 0
@@ -128,14 +230,20 @@ final class AppCoordinator {
         let center = NSWorkspace.shared.notificationCenter
         let monitor = self.monitor
 
-        center.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { _ in
-            Task { await monitor.pause() }
+        center.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
+            let engine = self?.outageEngine
+            Task {
+                await monitor.pause()
+                await engine?.willSleep()
+            }
         }
-        center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { _ in
+        center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
             // A stale baseline across a sleep would render the whole gap as one giant burst.
+            let engine = self?.outageEngine
             Task {
                 await monitor.resetBaseline()
                 await monitor.start()
+                await engine?.didWake()
             }
         }
     }
