@@ -16,10 +16,7 @@ final class AppCoordinator {
     // Connectivity
     var connectionState: ConnectionDisplayState = .unknown
 
-    // Preferences (persisted properly in M6)
-    var barLayout: BarLayout = .twoLine
-    var unit: SpeedUnit = .megabitsPerSecond
-    var showUnitsInBar: Bool = false
+    let settings = AppSettings()
 
     // Outages
     var outages: [OutageRecord] = []
@@ -28,9 +25,10 @@ final class AppCoordinator {
 
     let notifications = NotificationService()
     let loginItem = LoginItemManager()
+    let speedTest = SpeedTestController()
 
     private let time: any TimeSource = SystemTimeSource()
-    private let monitor = LiveThroughputMonitor()
+    let monitor = LiveThroughputMonitor()
     private let pathSource: any PathSource = NWPathSource()
     private var outageEngine: OutageEngine?
     private var tasks: [Task<Void, Never>] = []
@@ -55,6 +53,7 @@ final class AppCoordinator {
         }
 
         beginActivity()
+        wireSpeedTest()
         observeWorkspaceNotifications()
         startOutageEngine()
         startPathObservation()
@@ -73,6 +72,83 @@ final class AppCoordinator {
         tasks.removeAll()
         if let activity { ProcessInfo.processInfo.endActivity(activity) }
         activity = nil
+    }
+
+    // MARK: - Speed test
+
+    private func wireSpeedTest() {
+        speedTest.onStateChange = { [weak self] running in
+            guard let self else { return }
+            // Suspend outage detection during a test: our own traffic saturating the link
+            // must never be mistaken for a connectivity problem.
+            self.connectionState = running ? .testing : self.connectionState
+            guard let engine = self.outageEngine else { return }
+            Task {
+                if running { await engine.speedTestStarted() }
+                else { await engine.speedTestFinished(success: true) }
+            }
+            Task { await self.monitor.setDuringTest(running) }
+        }
+    }
+
+    func startSpeedTest() {
+        speedTest.start(interfaceName: activeInterface?.name, options: settings.speedTestOptions)
+    }
+
+    func startAppleDeepTest() {
+        speedTest.startAppleDeepTest(interfaceName: activeInterface?.name)
+    }
+
+    func clearOutages() {
+        guard let engine = outageEngine else { return }
+        Task {
+            await engine.clearOutages()
+            outages = []
+        }
+    }
+
+    func clearHistory() {
+        speedTest.clearHistory()
+    }
+
+    var notificationStatusText: String {
+        switch notifications.authorizationStatus {
+        case .authorized: return "Allowed"
+        case .denied: return "Denied"
+        case .notDetermined: return "Not asked yet"
+        case .provisional: return "Provisional"
+        default: return "Unknown"
+        }
+    }
+
+    func openNotificationSettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension") else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    var dataEstimateText: String {
+        let down = speedTest.latestResult?.downloadMbps ?? 100
+        let up = speedTest.latestResult?.uploadMbps ?? 20
+        let bytes = settings.estimatedBytesPerTest(downMbps: down, upMbps: up)
+        return String(format: "About %.0f MB per test at your last measured speed.", bytes / 1e6)
+    }
+
+    func openSettings() {
+        NSApp.activate()
+        if #available(macOS 14.0, *) {
+            NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+        }
+    }
+
+    func showAbout() {
+        NSApp.activate()
+        NSApp.orderFrontStandardAboutPanel(options: [
+            .applicationName: "Internet Speed Reader",
+            .credits: NSAttributedString(
+                string: "Measures against Cloudflare's public speed endpoints and Apple's networkQuality.\nApache-2.0 · github.com/Srimi1/Internet-speed-reader",
+                attributes: [.font: NSFont.systemFont(ofSize: 10)]
+            ),
+        ])
     }
 
     // MARK: - Outage engine
