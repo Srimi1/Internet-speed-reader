@@ -5,21 +5,26 @@ import SpeedCore
 struct StatusItemRenderModel: Equatable {
     var downText: String = "0.0"
     var upText: String = "0.0"
+    /// Which direction the adaptive layout is showing right now.
+    var activeDirection: TrafficDirection = .download
     var state: ConnectionDisplayState = .unknown
-    var layout: BarLayout = .twoLine
+    var layout: BarLayout = .adaptive
     var showUnits: Bool = false
     var unit: SpeedUnit = .megabitsPerSecond
 }
 
 enum BarLayout: String, CaseIterable, Codable {
+    /// One number that follows the traffic: download normally, upload while uploading.
+    case adaptive
     case twoLine
     case oneLine
     case dotOnly
 
     var title: String {
         switch self {
-        case .twoLine: return "Two lines"
-        case .oneLine: return "One line"
+        case .adaptive: return "Active direction only"
+        case .twoLine: return "Download and upload, two lines"
+        case .oneLine: return "Download and upload, one line"
         case .dotOnly: return "Dot only"
         }
     }
@@ -60,6 +65,9 @@ final class StatusItemView: NSView {
         switch layout {
         case .dotOnly:
             return padding + dot + 6
+        case .adaptive:
+            let sample = "↓ \(widestNumber(unit: unit))" + (showUnits ? " \(unit.shortLabel)" : "")
+            return padding + dot + measure(sample, font: oneLineFont)
         case .oneLine:
             let sample = "↓ \(widestNumber(unit: unit)) ↑ \(widestNumber(unit: unit))" + (showUnits ? " \(unit.shortLabel)" : "")
             return padding + dot + measure(sample, font: oneLineFont)
@@ -87,6 +95,11 @@ final class StatusItemView: NSView {
         switch model.layout {
         case .dotOnly:
             return
+        case .adaptive:
+            let unitSuffix = model.showUnits ? " \(model.unit.shortLabel)" : ""
+            let arrow = model.activeDirection == .upload ? "↑" : "↓"
+            let number = model.activeDirection == .upload ? model.upText : model.downText
+            draw("\(arrow) \(number)\(unitSuffix)", font: Self.oneLineFont, color: textColor, centeredVerticallyIn: bounds)
         case .oneLine:
             let unitSuffix = model.showUnits ? " \(model.unit.shortLabel)" : ""
             let text = "↓ \(model.downText) ↑ \(model.upText)\(unitSuffix)"
@@ -140,9 +153,15 @@ final class StatusItemView: NSView {
 
     private func updateAccessibility() {
         setAccessibilityLabel("Internet speed")
-        setAccessibilityValue(
-            "Download \(model.downText), upload \(model.upText) \(model.unit.shortLabel), \(model.state.spokenDescription)"
-        )
+        let value: String
+        if model.layout == .adaptive {
+            let direction = model.activeDirection == .upload ? "Uploading" : "Downloading"
+            let number = model.activeDirection == .upload ? model.upText : model.downText
+            value = "\(direction) at \(number) \(model.unit.shortLabel), \(model.state.spokenDescription)"
+        } else {
+            value = "Download \(model.downText), upload \(model.upText) \(model.unit.shortLabel), \(model.state.spokenDescription)"
+        }
+        setAccessibilityValue(value)
     }
 
     override func accessibilityRole() -> NSAccessibility.Role? { .staticText }

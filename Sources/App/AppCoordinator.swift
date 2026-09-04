@@ -10,6 +10,7 @@ final class AppCoordinator {
     var downMbps: Double = 0
     var upMbps: Double = 0
     var samples = RingBuffer<ThroughputSample>(capacity: 120)
+    var activeDirection: TrafficDirection = .download
     var activeInterface: PathSnapshot.Interface?
     var path: PathSnapshot = .unknown
 
@@ -38,12 +39,14 @@ final class AppCoordinator {
     private var smoothedDown: Double = 0
     private var smoothedUp: Double = 0
     private static let smoothing = 0.5
+    private var directionSelector = ActiveDirectionSelector()
 
     init() {}
 
     func start() {
         notifications.bootstrap()
         loginItem.refresh()
+        enableLaunchAtLoginOnFirstRun()
 
         Task { [notifications] in
             await notifications.refreshAuthorizationStatus()
@@ -263,6 +266,21 @@ final class AppCoordinator {
         downMbps = smoothedDown
         upMbps = smoothedUp
         samples.append(sample)
+        // Raw sample, not the smoothed value: the selector has its own dwell logic and
+        // should see the transfer the moment it starts.
+        activeDirection = directionSelector.update(
+            downMbps: sample.downMbps, upMbps: sample.upMbps, now: sample.at
+        )
+    }
+
+    /// The app is meant to just be there. It registers itself at login the first time
+    /// it runs from /Applications, exactly once, so switching it off in Settings sticks.
+    private func enableLaunchAtLoginOnFirstRun() {
+        guard !settings.didOfferLaunchAtLogin, LoginItemManager.isInApplicationsFolder else { return }
+        settings.didOfferLaunchAtLogin = true
+        if loginItem.state == .disabled {
+            loginItem.setEnabled(true)
+        }
     }
 
     // MARK: - Path

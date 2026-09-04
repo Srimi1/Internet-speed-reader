@@ -12,6 +12,7 @@ final class AppSettings {
         case notifyOnDrop, notifyOnRestore, notifyAfterSeconds, minimumOutageSeconds
         case downloadStreams, uploadStreams, phaseSeconds, dataSaver, confirmOnMetered
         case appleMaxSeconds, reopenPanelOnFinish
+        case didOfferLaunchAtLogin
     }
 
     enum RefreshPolicy: String, CaseIterable {
@@ -45,10 +46,13 @@ final class AppSettings {
     var confirmOnMetered: Bool { didSet { set(confirmOnMetered, .confirmOnMetered) } }
     var appleMaxSeconds: Int { didSet { set(appleMaxSeconds, .appleMaxSeconds) } }
     var reopenPanelOnFinish: Bool { didSet { set(reopenPanelOnFinish, .reopenPanelOnFinish) } }
+    /// Set once the app has registered itself at login on first run, so a user who later
+    /// turns it off is not fought with on every launch.
+    var didOfferLaunchAtLogin: Bool { didSet { set(didOfferLaunchAtLogin, .didOfferLaunchAtLogin) } }
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        barLayout = BarLayout(rawValue: defaults.string(forKey: Key.barLayout.rawValue) ?? "") ?? .twoLine
+        barLayout = BarLayout(rawValue: defaults.string(forKey: Key.barLayout.rawValue) ?? "") ?? .adaptive
         unit = SpeedUnit(rawValue: defaults.string(forKey: Key.unit.rawValue) ?? "") ?? .megabitsPerSecond
         showUnits = defaults.object(forKey: Key.showUnits.rawValue) as? Bool ?? false
         refreshPolicy = RefreshPolicy(rawValue: defaults.string(forKey: Key.refreshPolicy.rawValue) ?? "") ?? .reduceOnBattery
@@ -63,6 +67,7 @@ final class AppSettings {
         confirmOnMetered = defaults.object(forKey: Key.confirmOnMetered.rawValue) as? Bool ?? true
         appleMaxSeconds = defaults.object(forKey: Key.appleMaxSeconds.rawValue) as? Int ?? 15
         reopenPanelOnFinish = defaults.object(forKey: Key.reopenPanelOnFinish.rawValue) as? Bool ?? true
+        didOfferLaunchAtLogin = defaults.object(forKey: Key.didOfferLaunchAtLogin.rawValue) as? Bool ?? false
     }
 
     private func set(_ value: Any, _ key: Key) {
