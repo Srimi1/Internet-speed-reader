@@ -67,10 +67,18 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         }
     }
 
+    private var lastWidthKey = ""
+
     private func refresh() {
+        let widthKey = "\(coordinator.settings.barLayout.rawValue)|\(coordinator.settings.unit.rawValue)|\(coordinator.settings.showUnits)"
+        if widthKey != lastWidthKey {
+            lastWidthKey = widthKey
+            applyWidth()
+        }
         readout.model = StatusItemRenderModel(
             downText: SpeedFormatter.bar(coordinator.downMbps, unit: coordinator.settings.unit),
             upText: SpeedFormatter.bar(coordinator.upMbps, unit: coordinator.settings.unit),
+            activeDirection: coordinator.activeDirection,
             state: coordinator.connectionState,
             layout: coordinator.settings.barLayout,
             showUnits: coordinator.settings.showUnits,
