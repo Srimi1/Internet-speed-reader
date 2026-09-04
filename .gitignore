@@ -1,0 +1,15 @@
+*.xcodeproj/
+*.xcworkspace/
+DerivedData/
+.build/
+dist/
+build/
+*.nosync/
+.swiftpm/
+xcuserdata/
+*.xcuserstate
+*.xcresult
+*.icloud
+.DS_Store
+._*
+*.log
