@@ -1,5 +1,6 @@
 import AppKit
 import SpeedCore
+import SwiftUI
 
 /// Owns the NSStatusItem, its custom view, and click routing.
 ///
@@ -12,6 +13,17 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private let coordinator: AppCoordinator
     private let readout = StatusItemView()
     private var refreshTask: Task<Void, Never>?
+    private lazy var popover: NSPopover = {
+        let popover = NSPopover()
+        // .transient closes when the user clicks elsewhere, which is the behaviour people
+        // expect from a menu bar item. A running test keeps going in the coordinator.
+        popover.behavior = .transient
+        popover.animates = true
+        popover.contentViewController = NSHostingController(
+            rootView: PanelView().environment(coordinator)
+        )
+        return popover
+    }()
 
     init(coordinator: AppCoordinator) {
         self.coordinator = coordinator
@@ -57,21 +69,21 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     private func refresh() {
         readout.model = StatusItemRenderModel(
-            downText: SpeedFormatter.bar(coordinator.downMbps, unit: coordinator.unit),
-            upText: SpeedFormatter.bar(coordinator.upMbps, unit: coordinator.unit),
+            downText: SpeedFormatter.bar(coordinator.downMbps, unit: coordinator.settings.unit),
+            upText: SpeedFormatter.bar(coordinator.upMbps, unit: coordinator.settings.unit),
             state: coordinator.connectionState,
-            layout: coordinator.barLayout,
-            showUnits: coordinator.showUnitsInBar,
-            unit: coordinator.unit
+            layout: coordinator.settings.barLayout,
+            showUnits: coordinator.settings.showUnits,
+            unit: coordinator.settings.unit
         )
         statusItem.button?.toolTip = tooltip()
     }
 
     private func applyWidth() {
         statusItem.length = StatusItemView.width(
-            for: coordinator.barLayout,
-            showUnits: coordinator.showUnitsInBar,
-            unit: coordinator.unit
+            for: coordinator.settings.barLayout,
+            showUnits: coordinator.settings.showUnits,
+            unit: coordinator.settings.unit
         )
     }
 
@@ -93,9 +105,29 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         if isRightClick {
             showContextMenu()
         } else {
-            // Left click currently shows the same menu; the popover arrives in M6.
-            showContextMenu()
+            togglePopover()
         }
+    }
+
+    private func togglePopover() {
+        guard let button = statusItem.button else { return }
+        if popover.isShown {
+            popover.performClose(nil)
+            button.highlight(false)
+            return
+        }
+        // Opening the panel is a good moment to re-check connectivity.
+        coordinator.checkConnectionNow()
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        popover.contentViewController?.view.window?.makeKey()
+        button.highlight(true)
+    }
+
+    /// Called when a test finishes while the panel is closed, so the result is not missed.
+    func reopenPanelForResult() {
+        guard !popover.isShown, let button = statusItem.button else { return }
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        button.highlight(true)
     }
 
     private func showContextMenu() {
@@ -103,6 +135,36 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
         let menu = NSMenu()
         menu.delegate = self
+
+        let runTest = NSMenuItem(title: "Run Speed Test", action: #selector(runSpeedTest), keyEquivalent: "")
+        runTest.target = self
+        runTest.isEnabled = coordinator.speedTest.canStart
+        menu.addItem(runTest)
+
+        let appleTest = NSMenuItem(title: "Apple Deep Test", action: #selector(runAppleTest), keyEquivalent: "")
+        appleTest.target = self
+        menu.addItem(appleTest)
+
+        let checkNow = NSMenuItem(title: "Check Connection Now", action: #selector(checkNow), keyEquivalent: "")
+        checkNow.target = self
+        menu.addItem(checkNow)
+
+        menu.addItem(.separator())
+
+        let pauseMenu = NSMenu()
+        for (title, seconds) in [("1 Hour", 3600.0), ("Until Tomorrow", 86_400.0)] {
+            let item = NSMenuItem(title: title, action: #selector(pauseAlerts(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = seconds
+            pauseMenu.addItem(item)
+        }
+        let resume = NSMenuItem(title: "Resume Alerts", action: #selector(resumeAlerts), keyEquivalent: "")
+        resume.target = self
+        pauseMenu.addItem(resume)
+
+        let pauseItem = NSMenuItem(title: coordinator.alertsArePaused ? "Alerts Paused" : "Pause Alerts", action: nil, keyEquivalent: "")
+        pauseItem.submenu = pauseMenu
+        menu.addItem(pauseItem)
 
         let testItem = NSMenuItem(
             title: "Send Test Notification",
@@ -142,6 +204,16 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         menu.addItem(locationLine)
 
         menu.addItem(.separator())
+
+        let settings = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
+        settings.target = self
+        menu.addItem(settings)
+
+        let about = NSMenuItem(title: "About Internet Speed Reader", action: #selector(showAbout), keyEquivalent: "")
+        about.target = self
+        menu.addItem(about)
+
+        menu.addItem(.separator())
         let quit = NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         menu.addItem(quit)
 
@@ -176,4 +248,16 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     @objc private func sendTestNotification() { coordinator.sendTestNotification() }
     @objc private func toggleLoginItem() { coordinator.toggleLoginItem() }
+    @objc private func runSpeedTest() { coordinator.startSpeedTest() }
+    @objc private func runAppleTest() { coordinator.startAppleDeepTest() }
+    @objc private func checkNow() { coordinator.checkConnectionNow() }
+    @objc private func openSettings() { coordinator.openSettings() }
+    @objc private func showAbout() { coordinator.showAbout() }
+
+    @objc private func pauseAlerts(_ sender: NSMenuItem) {
+        guard let seconds = sender.representedObject as? Double else { return }
+        coordinator.pauseAlerts(until: Date().addingTimeInterval(seconds))
+    }
+
+    @objc private func resumeAlerts() { coordinator.pauseAlerts(until: nil) }
 }
