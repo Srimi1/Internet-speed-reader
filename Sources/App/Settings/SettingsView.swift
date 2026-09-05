@@ -48,6 +48,9 @@ private struct GeneralSettings: View {
             Picker("Menu bar shows", selection: $settings.barLayout) {
                 ForEach(BarLayout.allCases, id: \.self) { Text($0.title).tag($0) }
             }
+            Text("Two lines keeps download and upload readable at the same time. The active direction is drawn in bold.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
             Picker("Units", selection: $settings.unit) {
                 Text("Megabits (Mbps)").tag(SpeedUnit.megabitsPerSecond)
                 Text("Megabytes (MB/s)").tag(SpeedUnit.megabytesPerSecond)
@@ -100,6 +103,13 @@ private struct SpeedTestSettings: View {
     var body: some View {
         @Bindable var settings = coordinator.settings
         Form {
+            Picker("Engine", selection: $settings.speedTestEngine) {
+                ForEach(SpeedTestEngineChoice.allCases, id: \.self) { Text($0.title).tag($0) }
+            }
+            Text("Automatic tries Cloudflare first and falls back to the alternatives if a server refuses. Apple's tool picks its own endpoint, which can be far away, so its numbers are a second opinion.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
             LabeledContent("Download streams") {
                 Stepper("\(settings.downloadStreams)", value: $settings.downloadStreams, in: 2...8)
             }

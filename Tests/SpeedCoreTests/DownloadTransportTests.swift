@@ -29,11 +29,11 @@ private final class MeasurementURLProtocol: URLProtocol, @unchecked Sendable {
 
 @Suite("Validated download transport", .timeLimit(.minutes(1)))
 struct DownloadTransportTests {
-    private func stream(_ scenario: String) -> DownloadStream {
+    private func stream(_ scenario: String, endpoints: CloudflareEndpoints = .h3) -> DownloadStream {
         let configuration = CloudflareSpeedTest.makeSessionConfiguration(timeoutSeconds: 2)
         configuration.protocolClasses = [MeasurementURLProtocol.self]
         configuration.httpAdditionalHeaders?["X-Measurement-Test"] = scenario
-        return DownloadStream(configuration: configuration)
+        return DownloadStream(configuration: configuration, endpoints: endpoints)
     }
 
     @Test("Exact body completion is required after valid headers", arguments: ["valid", "truncated", "oversized", "no-response", "reset", "portal", "rate-limit", "forbidden"])
@@ -50,7 +50,8 @@ struct DownloadTransportTests {
             #expect(scenario != "valid")
             if scenario == "rate-limit" { #expect(error as? SpeedTestError == .rateLimited) }
             if scenario == "forbidden" {
-                #expect(error as? SpeedTestError == .engineFailure("Speed test server returned HTTP 403"))
+                // A refusal, so the chain can try a different host rather than giving up.
+                #expect(error as? SpeedTestError == .refused(status: 403))
             }
         }
     }

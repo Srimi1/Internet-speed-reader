@@ -19,9 +19,14 @@ struct TransferReceipt: Sendable {
 
 final class URLSessionCloudflareTransport: CloudflareTransport, @unchecked Sendable {
     let configuration: @Sendable (Double) -> URLSessionConfiguration
+    private let endpoints: CloudflareEndpoints
     private let controlSession: URLSession
 
-    init(configuration: @escaping @Sendable (Double) -> URLSessionConfiguration = CloudflareSpeedTest.makeSessionConfiguration) {
+    init(
+        endpoints: CloudflareEndpoints = .h3,
+        configuration: @escaping @Sendable (Double) -> URLSessionConfiguration = CloudflareSpeedTest.makeSessionConfiguration
+    ) {
+        self.endpoints = endpoints
         self.configuration = configuration
         // Latency samples must reuse a connection; a fresh session per sample would
         // charge DNS/TCP/TLS setup on every request and could never measure warm RTT.
@@ -41,6 +46,6 @@ final class URLSessionCloudflareTransport: CloudflareTransport, @unchecked Senda
     }
 
     func makeStream(timeoutSeconds: Double) -> any SpeedTestStream {
-        DownloadStream(configuration: configuration(timeoutSeconds))
+        DownloadStream(configuration: configuration(timeoutSeconds), endpoints: endpoints)
     }
 }

@@ -89,26 +89,35 @@ struct PanelView: View {
     // MARK: Live
 
     private var liveSection: some View {
-        HStack(spacing: 16) {
-            liveTile(arrow: "arrow.down", value: coordinator.downMbps, label: coordinator.liveReadingsAvailable ? "Live · Mbps" : "Unavailable")
-            liveTile(arrow: "arrow.up", value: coordinator.upMbps, label: coordinator.liveReadingsAvailable ? "Live · Mbps" : "Unavailable")
+        let unit = coordinator.settings.unit
+        let readout = coordinator.liveReadout
+        let label = readout.hasReading ? "Live · \(unit.shortLabel)" : "Unavailable"
+        return HStack(spacing: 16) {
+            liveTile(arrow: "arrow.down", value: readout.downMbps, label: label,
+                     isActive: coordinator.downloadIsActive)
+            liveTile(arrow: "arrow.up", value: readout.upMbps, label: label,
+                     isActive: coordinator.uploadIsActive)
             Spacer()
             Sparkline(samples: coordinator.samples.elements.map(\.downMbps))
                 .frame(width: 96, height: 30)
         }
     }
 
-    private func liveTile(arrow: String, value: Double, label: String) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
+    private func liveTile(arrow: String, value: Double, label: String, isActive: Bool) -> some View {
+        let readout = coordinator.liveReadout
+        return VStack(alignment: .leading, spacing: 1) {
             HStack(spacing: 3) {
                 Image(systemName: arrow).font(.caption2)
-                Text(coordinator.liveReadingsAvailable ? SpeedCoreFormatter.panel(value) : "—")
-                    .font(.system(size: 15, weight: .medium))
+                Text(readout.hasReading
+                     ? SpeedCoreFormatter.panel(value, unit: coordinator.settings.unit)
+                     : SpeedFormatter.unavailable)
+                    .font(.system(size: 15, weight: isActive ? .semibold : .medium))
                     .monospacedDigit()
                     .contentTransition(.numericText())
             }
             Text(label).font(.caption2).foregroundStyle(.secondary)
         }
+        .opacity(readout.freshness == .holding ? 0.55 : 1)
     }
 
     // MARK: Gauge and results
@@ -118,6 +127,7 @@ struct PanelView: View {
             Spacer()
             GaugeView(
                 mbps: gaugeValue,
+                unit: coordinator.settings.unit,
                 isRunning: coordinator.speedTest.state.isRunning,
                 phaseLabel: phaseLabel,
                 canStart: coordinator.canRunSpeedTest,
@@ -136,6 +146,13 @@ struct PanelView: View {
 
     private var phaseLabel: String {
         if coordinator.speedTest.state == .stopping { return "Stopping…" }
+        if let engine = coordinator.speedTest.engineLabel, coordinator.speedTest.state.isRunning {
+            return "\(engine) · \(phaseName)"
+        }
+        return phaseName
+    }
+
+    private var phaseName: String {
         switch coordinator.speedTest.phase {
         case .meta: return "Finding server"
         case .latency: return "Latency"
@@ -151,25 +168,38 @@ struct PanelView: View {
         let isApple = result?.engine == .appleNetworkQuality
 
         return HStack(spacing: 0) {
-            tile(isApple ? "BASE RTT" : "PING", value: result?.pingMs ?? result?.apple?.baseRttMs, unit: "ms")
-            tile(isApple ? "RPM" : "JITTER",
-                 value: isApple ? (result?.apple?.downloadResponsivenessRPM ?? result?.apple?.responsivenessRPM) : result?.jitterMs,
-                 unit: isApple ? "" : "ms")
-            tile("DOWNLOAD", value: result?.downloadMbps, unit: "Mbps")
-            tile("UPLOAD", value: result?.uploadMbps, unit: "Mbps")
+            scalarTile(isApple ? "BASE RTT" : "PING", value: result?.pingMs ?? result?.apple?.baseRttMs, caption: "ms")
+            scalarTile(isApple ? "RPM" : "JITTER",
+                       value: isApple ? (result?.apple?.downloadResponsivenessRPM ?? result?.apple?.responsivenessRPM) : result?.jitterMs,
+                       caption: isApple ? "" : "ms")
+            speedTile("DOWNLOAD", mbps: result?.downloadMbps)
+            speedTile("UPLOAD", mbps: result?.uploadMbps)
         }
     }
 
-    private func tile(_ label: String, value: Double?, unit: String) -> some View {
+    /// A measured speed, converted into the unit the user chose.
+    private func speedTile(_ label: String, mbps: Double?) -> some View {
+        let unit = coordinator.settings.unit
+        return tile(label,
+                    text: mbps.map { SpeedCoreFormatter.panel($0, unit: unit) } ?? SpeedFormatter.unavailable,
+                    caption: unit.shortLabel)
+    }
+
+    /// A value that is not a speed. Never converted: a latency divided by eight is wrong.
+    private func scalarTile(_ label: String, value: Double?, caption: String) -> some View {
+        tile(label, text: value.map { SpeedCoreFormatter.scalar($0) } ?? SpeedFormatter.unavailable, caption: caption)
+    }
+
+    private func tile(_ label: String, text: String, caption: String) -> some View {
         VStack(spacing: 2) {
             Text(label)
                 .font(.system(size: 9, weight: .semibold))
                 .foregroundStyle(.secondary)
-            Text(value.map { SpeedCoreFormatter.panel($0) } ?? "—")
+            Text(text)
                 .font(.system(size: 16, weight: .semibold))
                 .monospacedDigit()
                 .contentTransition(.numericText())
-            Text(unit)
+            Text(caption)
                 .font(.system(size: 9))
                 .foregroundStyle(.tertiary)
         }
@@ -185,16 +215,20 @@ struct PanelView: View {
                     .foregroundStyle(.red)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            if let reason = coordinator.speedTest.startBlockedReason, !coordinator.speedTest.state.isRunning {
+            if let reason = coordinator.speedTestBlockedReason, !coordinator.speedTest.state.isRunning {
                 Text(reason).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             } else if coordinator.path.status != .satisfied {
                 Text("Connect to a network to run a speed test.").foregroundStyle(.secondary)
             }
             if let result = coordinator.speedTest.latestResult {
-                let provider = result.engine == .cloudflare ? "Cloudflare" : "Apple"
-                Text("Last test · \(Self.shortDate(result.startedAt)) · \(provider)")
+                Text("Last test · \(Self.shortDate(result.startedAt)) · \(Self.provider(for: result))")
                     .foregroundStyle(.secondary)
+                if let fallback = result.fallbackFrom, !fallback.isEmpty {
+                    let names = fallback.compactMap { SpeedTestEngineKey(rawValue: $0)?.displayName }
+                    Text("after \(names.joined(separator: ", ")) refused")
+                        .foregroundStyle(.secondary)
+                }
                 if result.methodologyVersion == nil {
                     Text("Earlier measurement method")
                         .foregroundStyle(.secondary)
@@ -205,6 +239,14 @@ struct PanelView: View {
             }
         }
         .font(.caption2)
+    }
+
+    /// Names the engine that actually produced a result, including which Cloudflare host.
+    private static func provider(for result: SpeedTestResult) -> String {
+        if let key = result.engineKey.flatMap(SpeedTestEngineKey.init(rawValue:)) {
+            return key.displayName
+        }
+        return result.engine == .cloudflare ? "Cloudflare" : "Apple"
     }
 
     private static func qualityLabel(_ quality: String?) -> String {
@@ -263,11 +305,12 @@ struct PanelView: View {
                     HStack {
                         Text(Self.shortDate(result.startedAt))
                             .frame(width: 84, alignment: .leading)
-                        Text("↓ \(result.downloadMbps.map(SpeedCoreFormatter.panel) ?? "—")")
-                        Text("↑ \(result.uploadMbps.map(SpeedCoreFormatter.panel) ?? "—")")
+                        Text("↓ \(Self.historySpeed(result.downloadMbps, unit: coordinator.settings.unit))")
+                        Text("↑ \(Self.historySpeed(result.uploadMbps, unit: coordinator.settings.unit))")
+                        Text(coordinator.settings.unit.shortLabel).foregroundStyle(.tertiary)
                         Spacer()
                     }
-                    let engine = result.engine == .appleNetworkQuality ? "Apple" : "Cloudflare"
+                    let engine = Self.provider(for: result)
                     Text(result.methodologyVersion == nil ? "\(engine) · earlier measurement method" : engine)
                         .foregroundStyle(.tertiary)
                 }
@@ -304,6 +347,10 @@ struct PanelView: View {
             .font(.system(size: 9))
             .foregroundStyle(.tertiary)
             .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private static func historySpeed(_ mbps: Double?, unit: SpeedUnit) -> String {
+        mbps.map { SpeedCoreFormatter.panel($0, unit: unit) } ?? SpeedFormatter.unavailable
     }
 
     private static func shortDate(_ date: Date) -> String {

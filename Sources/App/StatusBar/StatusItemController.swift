@@ -2,13 +2,21 @@ import AppKit
 import SpeedCore
 import SwiftUI
 
+/// Somewhere the panel can be shown from, without the coordinator knowing about AppKit.
+@MainActor
+protocol PanelPresenting: AnyObject {
+    func showPanel()
+    /// Brings the panel back when a test finishes while it is closed.
+    func reopenPanelForResult()
+}
+
 /// Owns the NSStatusItem, its custom view, and click routing.
 ///
 /// AppKit rather than SwiftUI's MenuBarExtra: the SwiftUI label is limited to text or
 /// text+image, its popover cannot be dismissed programmatically, and it offers no
 /// right-click. All three are requirements here.
 @MainActor
-final class StatusItemController: NSObject, NSMenuDelegate {
+final class StatusItemController: NSObject, NSMenuDelegate, PanelPresenting {
     private let statusItem: NSStatusItem
     private let coordinator: AppCoordinator
     private let readout = StatusItemView()
@@ -31,6 +39,9 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         super.init()
 
         statusItem.autosaveName = "com.srimi.internetspeedreader.readout"
+        // Never leave the item hidden by a stale persisted flag: the app has no other
+        // always-visible surface, so an invisible item reads as a dead app.
+        statusItem.isVisible = true
         if let button = statusItem.button {
             button.title = ""
             button.image = nil
@@ -69,44 +80,77 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     }
 
     private var lastWidthKey = ""
+    private var lastTooltip = ""
 
     private func refresh() {
         coordinator.refreshTimeSensitiveState()
-        let widthKey = "\(coordinator.settings.barLayout.rawValue)|\(coordinator.settings.unit.rawValue)|\(coordinator.settings.showUnits)"
+        let settings = coordinator.settings
+        let widthKey = "\(settings.barLayout.rawValue)|\(settings.unit.rawValue)|\(settings.showUnits)"
         if widthKey != lastWidthKey {
             lastWidthKey = widthKey
             applyWidth()
         }
+        let live = coordinator.liveReadout
+        let hasReading = live.hasReading
         readout.model = StatusItemRenderModel(
-            downText: coordinator.liveReadingsAvailable ? SpeedFormatter.bar(coordinator.downMbps, unit: coordinator.settings.unit) : "—",
-            upText: coordinator.liveReadingsAvailable ? SpeedFormatter.bar(coordinator.upMbps, unit: coordinator.settings.unit) : "—",
+            downText: hasReading ? SpeedFormatter.bar(live.downMbps, unit: settings.unit) : SpeedFormatter.unavailable,
+            upText: hasReading ? SpeedFormatter.bar(live.upMbps, unit: settings.unit) : SpeedFormatter.unavailable,
+            downEmphasis: emphasis(isActive: coordinator.downloadIsActive, otherIsActive: coordinator.uploadIsActive),
+            upEmphasis: emphasis(isActive: coordinator.uploadIsActive, otherIsActive: coordinator.downloadIsActive),
+            freshness: live.freshness,
             activeDirection: coordinator.activeDirection,
             state: coordinator.connectionState,
-            layout: coordinator.settings.barLayout,
-            showUnits: coordinator.settings.showUnits,
-            unit: coordinator.settings.unit
+            layout: settings.barLayout,
+            showUnits: settings.showUnits,
+            unit: settings.unit
         )
-        statusItem.button?.toolTip = tooltip()
-        statusItem.button?.setAccessibilityValue(coordinator.liveReadingsAvailable
-            ? "Download \(readout.model.downText), upload \(readout.model.upText) \(coordinator.settings.unit.shortLabel), \(coordinator.connectionState.spokenDescription)"
-            : "Live reading unavailable, \(coordinator.connectionState.spokenDescription)")
+        // Reassigning the tooltip restarts AppKit's hover timer, so only do it on change.
+        let tip = tooltip()
+        if tip != lastTooltip {
+            lastTooltip = tip
+            statusItem.button?.toolTip = tip
+        }
+        statusItem.button?.setAccessibilityValue(readout.accessibilityValue())
+    }
+
+    private func emphasis(isActive: Bool, otherIsActive: Bool) -> RowEmphasis {
+        if isActive { return .active }
+        return otherIsActive ? .muted : .normal
     }
 
     private func applyWidth() {
-        statusItem.length = StatusItemView.width(
+        let width = StatusItemView.width(
             for: coordinator.settings.barLayout,
             showUnits: coordinator.settings.showUnits,
             unit: coordinator.settings.unit
         )
+        statusItem.length = width
+        // Recorded so the installed-app check can compare layouts on a crowded menu bar
+        // instead of relying on an estimate.
+        Log.app.info("status item width=\(width) layout=\(self.coordinator.settings.barLayout.rawValue, privacy: .public) unit=\(self.coordinator.settings.unit.rawValue, privacy: .public)")
     }
 
     private func tooltip() -> String {
+        let unit = coordinator.settings.unit
+        let live = coordinator.liveReadout
         var lines = ["Internet Speed Reader"]
+        if live.hasReading {
+            let down = SpeedFormatter.bar(live.downMbps, unit: unit)
+            let up = SpeedFormatter.bar(live.upMbps, unit: unit)
+            lines.append("↓ \(down) · ↑ \(up) \(unit.shortLabel) now")
+        } else {
+            lines.append(coordinator.liveStatusText)
+        }
         if let interface = coordinator.activeInterface {
             let kind = interface.kind == .tunnel ? "VPN tunnel payload" : interface.kind.rawValue
             lines.append("Live on \(interface.name) (\(kind)), all apps")
         }
-        lines.append(coordinator.liveStatusText)
+        if let result = coordinator.speedTest.latestResult {
+            let provider = result.engine == .cloudflare ? "Cloudflare" : "Apple"
+            let down = result.downloadMbps.map { SpeedFormatter.bar($0, unit: unit) } ?? SpeedFormatter.unavailable
+            let up = result.uploadMbps.map { SpeedFormatter.bar($0, unit: unit) } ?? SpeedFormatter.unavailable
+            lines.append("Last test ↓ \(down) · ↑ \(up) \(unit.shortLabel) · \(provider)")
+        }
         lines.append("Interface traffic includes protocol overhead and local traffic; GO measures test payload.")
         return lines.joined(separator: "\n")
     }
@@ -144,8 +188,10 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     /// Called when a test finishes while the panel is closed, so the result is not missed.
     func reopenPanelForResult() {
-        guard !popover.isShown, let button = statusItem.button else { return }
+        guard !popover.isShown, let button = statusItem.button, button.window != nil else { return }
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        // Without this the popover can open unfocused and dismiss on the next click.
+        popover.contentViewController?.view.window?.makeKey()
         button.highlight(true)
     }
 

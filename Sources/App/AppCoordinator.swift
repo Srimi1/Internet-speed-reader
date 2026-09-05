@@ -7,15 +7,17 @@ import SpeedCore
 @Observable
 final class AppCoordinator {
     // Live meter
-    var downMbps: Double = 0
-    var upMbps: Double = 0
+    var liveReadout = LiveReadoutModel.Presentation(
+        downMbps: 0, upMbps: 0, freshness: .unavailable, message: "Waiting for a reading"
+    )
     var samples = RingBuffer<ThroughputSample>(capacity: 120)
     var activeDirection: TrafficDirection = .download
+    /// Which directions are transferring right now, for row emphasis in the menu bar.
+    var downloadIsActive = false
+    var uploadIsActive = false
     var activeInterface: PathSnapshot.Interface?
     var path: PathSnapshot = .unknown
-    var liveReadingsAvailable = false
-    var liveStatusText = "Waiting for a reading"
-    private var lastSampleAt: ContinuousClock.Instant?
+    private var readout = LiveReadoutModel()
     private var currentInterval: Double = 1
     private var isSleeping = false
     private var measuringCapacity = false
@@ -49,8 +51,18 @@ final class AppCoordinator {
 
     private var smoother = ThroughputSmoother()
     private var directionSelector = ActiveDirectionSelector()
+    private var downloadActivity = TransferActivityDetector()
+    private var uploadActivity = TransferActivityDetector()
+    /// Set by AppDelegate so a finished test can bring the panel back.
+    @ObservationIgnored weak var panelPresenter: (any PanelPresenting)?
 
     init() {}
+
+    /// Smoothed download rate currently on screen.
+    var downMbps: Double { liveReadout.downMbps }
+    var upMbps: Double { liveReadout.upMbps }
+    var liveReadingsAvailable: Bool { liveReadout.hasReading }
+    var liveStatusText: String { liveReadout.message }
 
     func start() {
         guard !hasStarted else { return }
@@ -65,6 +77,9 @@ final class AppCoordinator {
                 await notifications.requestAuthorization()
             }
         }
+
+        notifications.onRunTestRequested = { [weak self] in self?.startSpeedTest() }
+        notifications.onShowLogRequested = { [weak self] in self?.panelPresenter?.showPanel() }
 
         beginActivity()
         wireSpeedTest()
@@ -118,11 +133,17 @@ final class AppCoordinator {
                 self.connectionState = .testing
                 await self.monitor.setDuringTest(true)
                 await self.outageEngine?.speedTestStarted()
-            case .finished:
+            case let .finished(outcome):
                 self.measuringCapacity = false
                 self.connectionState = .unknown
                 await self.monitor.setDuringTest(false)
                 guard !self.isShuttingDown else { return }
+                if !self.isSleeping, self.settings.reopenPanelOnFinish,
+                   outcome == .succeeded || outcome == .failed {
+                    // After the controller has published its terminal state, so the
+                    // reopened panel shows the result or the error, not the running gauge.
+                    Task { @MainActor [weak self] in self?.panelPresenter?.reopenPanelForResult() }
+                }
                 if self.isSleeping {
                     await self.outageEngine?.willSleep()
                 } else {
@@ -138,21 +159,37 @@ final class AppCoordinator {
     }
 
     var canRunSpeedTest: Bool {
-        path.status == .satisfied && !isSleeping && !isShuttingDown && connectionState != .captivePortal && speedTest.canStart
+        pathAllowsTesting && speedTest.canStart(choice: settings.speedTestEngine)
+    }
+
+    private var pathAllowsTesting: Bool {
+        path.status == .satisfied && !isSleeping && !isShuttingDown && connectionState != .captivePortal
+    }
+
+    /// Why GO is unavailable right now, or nil when it can run.
+    var speedTestBlockedReason: String? {
+        speedTest.startBlockedReason(choice: settings.speedTestEngine)
     }
 
     var canRunAppleTest: Bool {
-        path.status == .satisfied && !isSleeping && !isShuttingDown && connectionState != .captivePortal && speedTest.canStartApple
+        pathAllowsTesting && speedTest.canStartApple
     }
 
     func startSpeedTest() {
         guard canRunSpeedTest else { return }
-        speedTest.start(interfaceName: activeInterface?.name, options: settings.speedTestOptions)
+        speedTest.start(
+            choice: settings.speedTestEngine,
+            request: settings.speedTestRequest(interfaceName: activeInterface?.name)
+        )
     }
 
+    /// Runs Apple's tool alone, as a deliberate second opinion rather than a fallback.
     func startAppleDeepTest() {
         guard canRunAppleTest else { return }
-        speedTest.startAppleDeepTest(interfaceName: activeInterface?.name, maxSeconds: settings.appleMaxSeconds)
+        speedTest.start(
+            choice: .apple,
+            request: settings.speedTestRequest(interfaceName: activeInterface?.name)
+        )
     }
 
     func clearOutages() {
@@ -313,8 +350,7 @@ final class AppCoordinator {
                     guard !self.isSleeping, sample.interfaceName == self.activeInterface?.name else { continue }
                     self.ingest(sample)
                 case let .unavailable(reason):
-                    self.resetLiveDisplay(message: reason == .paused
-                        ? "Paused while the Mac sleeps" : "Waiting for a fresh reading")
+                    self.holdLiveDisplay(reason)
                     if reason == .stale, !self.isSleeping, !self.isShuttingDown { await monitor.start() }
                 }
             }
@@ -325,12 +361,26 @@ final class AppCoordinator {
         let smoothed = smoother.update(
             downMbps: sample.downMbps, upMbps: sample.upMbps, elapsedSeconds: sample.elapsedSeconds
         )
-        downMbps = smoothed.downMbps
-        upMbps = smoothed.upMbps
+        readout.sample(downMbps: smoothed.downMbps, upMbps: smoothed.upMbps, at: sample.at)
         samples.append(sample)
-        lastSampleAt = sample.at
-        liveReadingsAvailable = true
-        liveStatusText = "Live traffic · all apps"
+
+        // Activity detectors see raw values: smoothing exists to steady the display, and
+        // feeding a smoothed rate into a byte-volume window would understate short bursts.
+        let wasDownloading = downloadIsActive
+        let wasUploading = uploadIsActive
+        downloadIsActive = downloadActivity.update(
+            activityMbps: sample.downloadActivityMbps, elapsedSeconds: sample.elapsedSeconds, now: sample.at
+        ) == .active
+        uploadIsActive = uploadActivity.update(
+            activityMbps: sample.uploadActivityMbps, elapsedSeconds: sample.elapsedSeconds, now: sample.at
+        ) == .active
+        if wasDownloading != downloadIsActive {
+            Log.live.debug("download activity \(self.downloadIsActive ? "active" : "idle", privacy: .public)")
+        }
+        if wasUploading != uploadIsActive {
+            Log.live.debug("upload activity \(self.uploadIsActive ? "active" : "idle", privacy: .public)")
+        }
+
         let previousDirection = activeDirection
         activeDirection = directionSelector.update(
             downMbps: sample.downMbps, upMbps: sample.upMbps,
@@ -339,27 +389,46 @@ final class AppCoordinator {
         if activeDirection != previousDirection {
             Log.live.debug("menu bar direction changed to \(self.activeDirection.rawValue, privacy: .public)")
         }
+        publishReadout()
         Log.live.debug("sample on \(sample.interfaceName, privacy: .public): down=\(sample.downMbps) up=\(sample.upMbps) activity=\(sample.uploadActivityMbps) elapsed=\(sample.elapsedSeconds)")
     }
 
-    private func resetLiveDisplay(message: String) {
-        Log.live.debug("live reading unavailable: \(message, privacy: .public)")
+    /// A reading is briefly missing. The last numbers stay on screen, dimmed, rather than
+    /// being replaced by a dash for what is usually one late tick.
+    private func holdLiveDisplay(_ reason: LiveThroughputUnavailableReason) {
+        readout.unavailable(reason, at: time.now(), expectedIntervalSeconds: currentInterval)
+        publishReadout()
+        Log.live.debug("live reading unavailable: \(self.liveReadout.message, privacy: .public)")
+    }
+
+    /// The source itself changed or went away: clear everything derived from it.
+    private func clearLiveDisplay(message: String) {
+        Log.live.debug("live display cleared: \(message, privacy: .public)")
         smoother.reset()
         directionSelector.reset()
-        downMbps = 0
-        upMbps = 0
+        downloadActivity.reset()
+        uploadActivity.reset()
+        downloadIsActive = false
+        uploadIsActive = false
         activeDirection = .download
-        liveReadingsAvailable = false
-        lastSampleAt = nil
-        liveStatusText = message
+        readout.reset(message: message)
         samples = RingBuffer<ThroughputSample>(capacity: 120)
+        publishReadout()
+    }
+
+    private func publishReadout() {
+        liveReadout = readout.presentation(now: time.now())
     }
 
     /// The menu bar owns a refresh loop even while its panel is closed.
     func refreshTimeSensitiveState() {
         speedTest.refreshTime()
-        if let lastSampleAt, time.now().seconds(since: lastSampleAt) > ThroughputCalculator.maximumGapSeconds(expectedIntervalSeconds: currentInterval) {
-            resetLiveDisplay(message: "Reading unavailable · reconnecting")
+        publishReadout()
+        // Fires at most once per staleness episode: this loop runs faster than the
+        // sampling cadence, and repeatedly dropping the baseline would stop the monitor
+        // from ever building a delta.
+        if readout.needsRebaseline(now: time.now(), expectedIntervalSeconds: currentInterval) {
+            Log.live.debug("live meter stale; requesting a fresh baseline")
             Task { await monitor.resetBaseline() }
         }
         if let until = alertsPausedUntil, until <= time.wallClock() { pauseAlerts(until: nil) }
@@ -369,7 +438,9 @@ final class AppCoordinator {
         let interval = PowerPolicy.currentInterval(policy: settings.refreshPolicy)
         guard interval != currentInterval else { return }
         currentInterval = interval
-        resetLiveDisplay(message: "Updating refresh interval")
+        // A cadence change is not a network change: keep the last reading while the
+        // sampler re-establishes its baseline at the new interval.
+        holdLiveDisplay(.starting)
         Task { await monitor.setCadence(.seconds(interval)) }
     }
 
@@ -406,24 +477,25 @@ final class AppCoordinator {
     }
 
     private func apply(_ snapshot: PathSnapshot) async {
-        // NWPathSource deduplicates native NWPath equality before incrementing its
-        // generation, including route changes that keep the same physical adapter.
-        let changed = snapshot.generation != path.generation
-            || snapshot.status != path.status || snapshot.interfaces != path.interfaces
-            || snapshot.isExpensive != path.isExpensive || snapshot.isConstrained != path.isConstrained
+        // NWPath equality fails for DNS, gateway and address changes, so a new snapshot
+        // arrives for events that leave the measured interface untouched. Only a change
+        // to the interface itself may disturb the meter.
+        let change = PathChangeClassifier.classify(previous: path, current: snapshot)
         let selected = snapshot.status == .satisfied ? snapshot.activeInterface : nil
-        let interfaceChanged = selected?.index != activeInterface?.index
         path = snapshot
         activeInterface = selected
-        if changed {
+
+        if change != .none {
+            Log.live.debug("path change: \(change.rawValue, privacy: .public)")
+        }
+        if change.invalidatesRunningTest {
+            // A capacity test must describe one network, so even a route-only change ends it.
             speedTest.cancel(reason: "Network changed. Run a new test on this connection.")
-            resetLiveDisplay(message: selected == nil ? "No network interface" : "Waiting for a fresh reading")
+        }
+        if change.requiresInterfaceRebind {
+            clearLiveDisplay(message: selected == nil ? "No network interface" : "Waiting for a fresh reading")
             if let selected {
-                if interfaceChanged {
-                    await monitor.setInterface(name: selected.name, index: selected.index)
-                } else {
-                    await monitor.resetBaseline()
-                }
+                await monitor.setInterface(name: selected.name, index: selected.index)
             } else {
                 await monitor.clearInterface()
             }
@@ -452,14 +524,14 @@ final class AppCoordinator {
         measuringCapacity = false
         connectionState = .unknown
         speedTest.cancel(reason: "Test interrupted because the Mac went to sleep.")
-        resetLiveDisplay(message: "Paused while the Mac sleeps")
+        clearLiveDisplay(message: "Paused while the Mac sleeps")
         await monitor.pause()
         await outageEngine?.willSleep()
     }
 
     private func didWake() async {
         isSleeping = false
-        resetLiveDisplay(message: "Resuming live monitoring")
+        clearLiveDisplay(message: "Resuming live monitoring")
         updatePowerPolicy()
         await monitor.resetBaseline()
         await monitor.start()

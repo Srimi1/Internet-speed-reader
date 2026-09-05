@@ -13,50 +13,57 @@ public enum SpeedUnit: String, Sendable, Codable, CaseIterable {
 }
 
 public enum SpeedFormatter {
-    /// Compact string for the menu bar. Keeps the character count small and predictable
-    /// so the item's fixed width holds from 0 to gigabit speeds.
+    /// Below this the converted value has no meaningful two-decimal representation.
+    /// Real traffic under it is shown as "<0.01", never as a bare zero: a moving link
+    /// that reads 0.0 is indistinguishable from a dead app.
+    static let displayFloor = 0.005
+
+    /// Compact string for the menu bar. Precision follows the magnitude of the value in
+    /// the unit actually shown, so megabytes per second keeps two decimals where megabits
+    /// keeps one. The string never exceeds five characters, which is what pins the item
+    /// width (ADR-019).
     public static func bar(_ mbps: Double, unit: SpeedUnit = .megabitsPerSecond, locale: Locale = .current) -> String {
         let value = convert(mbps, to: unit)
-        let formatter = NumberFormatter()
-        formatter.locale = locale
-        formatter.numberStyle = .decimal
-        formatter.usesGroupingSeparator = false
-        // Half-up, not the default half-even: 84.25 reading as 84.2 looks like a bug
-        // to anyone comparing the bar against the panel.
-        formatter.roundingMode = .halfUp
+        let formatter = makeFormatter(locale: locale)
 
-        switch value {
-        case ..<0.05:
-            formatter.minimumFractionDigits = 1
-            formatter.maximumFractionDigits = 1
-            return formatter.string(from: 0) ?? "0.0"
-        case ..<100:
-            formatter.minimumFractionDigits = 1
-            formatter.maximumFractionDigits = 1
-            return formatter.string(from: NSNumber(value: value)) ?? "0.0"
-        case ..<1000:
-            formatter.maximumFractionDigits = 0
-            return formatter.string(from: NSNumber(value: value)) ?? "0"
-        default:
-            // Above 10 Gbps a decimal would push the string to six characters and
-            // break the fixed item width, so drop it.
-            let giga = value / 1000
-            let decimals = giga < 10 ? 1 : 0
-            formatter.minimumFractionDigits = decimals
-            formatter.maximumFractionDigits = decimals
-            return (formatter.string(from: NSNumber(value: giga)) ?? "1.0") + "G"
+        // Not finite, negative, or an exact zero: the counters did not move. This is a
+        // measured zero and is deliberately different from the unavailable dash.
+        guard value.isFinite, value > 0 else {
+            return fixed(0, digits: 2, formatter: formatter)
         }
+        guard value >= displayFloor else {
+            return "<" + fixed(0.01, digits: 2, formatter: formatter)
+        }
+
+        // Each band re-checks the band above it, so a value that rounds up to the band's
+        // ceiling is formatted by the next rule instead of printing "1.00" or "100.0".
+        if value < 1, rounded(value, digits: 2) < 1 {
+            return fixed(value, digits: 2, formatter: formatter)
+        }
+        if value < 100, rounded(value, digits: 1) < 100 {
+            return fixed(value, digits: 1, formatter: formatter)
+        }
+        if value < 1000, rounded(value, digits: 0) < 1000 {
+            return fixed(value, digits: 0, formatter: formatter)
+        }
+        let giga = value / 1000
+        // Above 10 Gbps a decimal would push the string past five characters.
+        let digits = rounded(giga, digits: 1) < 10 ? 1 : 0
+        return fixed(giga, digits: digits, formatter: formatter) + "G"
     }
 
     /// Fuller string for the panel, with more precision at low speeds.
     public static func panel(_ mbps: Double, unit: SpeedUnit = .megabitsPerSecond, locale: Locale = .current) -> String {
         let value = convert(mbps, to: unit)
-        let formatter = NumberFormatter()
-        formatter.locale = locale
-        formatter.numberStyle = .decimal
-        formatter.maximumFractionDigits = value < 10 ? 2 : (value < 100 ? 1 : 0)
-        formatter.minimumFractionDigits = value < 100 ? 1 : 0
-        return formatter.string(from: NSNumber(value: value)) ?? "0"
+        let formatter = makeFormatter(locale: locale)
+        formatter.usesGroupingSeparator = true
+
+        guard value.isFinite, value > 0 else { return fixed(0, digits: 2, formatter: formatter) }
+        guard value >= displayFloor else { return "<" + fixed(0.01, digits: 2, formatter: formatter) }
+
+        if value < 10, rounded(value, digits: 2) < 10 { return fixed(value, digits: 2, formatter: formatter) }
+        if value < 100, rounded(value, digits: 1) < 100 { return fixed(value, digits: 1, formatter: formatter) }
+        return fixed(value, digits: 0, formatter: formatter)
     }
 
     public static func convert(_ mbps: Double, to unit: SpeedUnit) -> Double {
@@ -66,11 +73,40 @@ public enum SpeedFormatter {
         }
     }
 
-    /// The widest strings the bar can ever draw, used to pin the status item width.
+    /// The strings the bar can draw at their widest, used to pin the status item width.
+    /// Every band is represented, including the "<0.01" prefix and the giga suffix.
     public static func widestBarSamples(unit: SpeedUnit, locale: Locale = .current) -> [String] {
-        [bar(999.4, unit: unit, locale: locale),
-         bar(9_999, unit: unit, locale: locale),
-         bar(88.88, unit: unit, locale: locale)]
+        [bar(0.0001, unit: unit, locale: locale),
+         bar(convert(0.88, to: unit) * 8, unit: unit, locale: locale),
+         bar(convert(88.88, to: unit) * 8, unit: unit, locale: locale),
+         bar(convert(999.4, to: unit) * 8, unit: unit, locale: locale),
+         bar(convert(9_999, to: unit) * 8, unit: unit, locale: locale),
+         unavailable]
+    }
+
+    /// Shown when there is no trustworthy reading at all. Never used for measured zero.
+    public static let unavailable = "—"
+
+    private static func makeFormatter(locale: Locale) -> NumberFormatter {
+        let formatter = NumberFormatter()
+        formatter.locale = locale
+        formatter.numberStyle = .decimal
+        formatter.usesGroupingSeparator = false
+        // Half-up, not the default half-even: 84.25 reading as 84.2 looks like a bug
+        // to anyone comparing the bar against the panel.
+        formatter.roundingMode = .halfUp
+        return formatter
+    }
+
+    private static func fixed(_ value: Double, digits: Int, formatter: NumberFormatter) -> String {
+        formatter.minimumFractionDigits = digits
+        formatter.maximumFractionDigits = digits
+        return formatter.string(from: NSNumber(value: value)) ?? "0"
+    }
+
+    private static func rounded(_ value: Double, digits: Int) -> Double {
+        let scale = pow(10.0, Double(digits))
+        return (value * scale).rounded(.toNearestOrAwayFromZero) / scale
     }
 }
 

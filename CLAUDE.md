@@ -1,10 +1,11 @@
 # CLAUDE.md
 
-Read this first. This is the operational map for Internet Speed Reader v1.1.0.
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) describes current behavior;
-[docs/DECISIONS.md](docs/DECISIONS.md) explains it. Current validation belongs in
-[docs/VERIFICATION-1.1.md](docs/VERIFICATION-1.1.md). The v1.0 verification report,
-research and earlier plans are historical evidence, not current acceptance results.
+Read this first. This is the operational map for Internet Speed Reader v2.0.0.
+[docs/v2/ARCHITECTURE-2.0.md](docs/v2/ARCHITECTURE-2.0.md) describes what 2.0 changed and
+[docs/v2/DECISIONS-2.0.md](docs/v2/DECISIONS-2.0.md) explains why; the 1.x documents still
+describe the unchanged measurement spine. Current validation belongs in
+[docs/v2/VERIFICATION-2.0.md](docs/v2/VERIFICATION-2.0.md). Earlier verification reports,
+research and plans are historical evidence, not current acceptance results.
 
 ## What this is
 
@@ -14,11 +15,12 @@ posts silent banners and runs on-demand capacity tests against Cloudflare or App
 `networkQuality`. Live throughput is actual activity, near zero when idle; GO measures
 capacity by transferring data. An unavailable reading is `—`, not zero or an old rate.
 
-The adaptive bar rests on download and gives sustained upload activity priority.
-Default cadence is one second, independent of opening the panel. Launch at login
-remains on by default. The bundle identifier `com.srimi.internetspeedreader` never
-changes: defaults, notifications, stores and login registration depend on it.
-`project.yml` specifies 1.1.0/build 2; publication/installation status must be verified.
+The bar shows both directions by default and emphasises the one transferring; the adaptive
+single-number layout remains selectable and keeps its own direction selector. Default
+cadence is one second, independent of opening the panel. Launch at login remains on by
+default. The bundle identifier `com.srimi.internetspeedreader` never changes: defaults,
+notifications, stores and login registration depend on it. `project.yml` specifies
+2.0.0/build 3; publication/installation status must be verified.
 
 ## Commands
 
@@ -49,7 +51,8 @@ bare executable: notification APIs require bundle context.
 | `Sources/SpeedCore/Outage/`, `Probe/` | Pure connectivity state machine, actor engine/ledger, deadline-bound HTTP prober. |
 | `Sources/SpeedCore/SpeedTest/Cloudflare/` | Transport/delegate, provisional and confirmed payload ledgers, byte reservations, methodology-2 aggregation and response validation. |
 | `Sources/SpeedCore/Apple/` | Injectable process runner, bounded cancellation/exit cleanup, validated Apple JSON. |
-| `Sources/SpeedCore/Support/` | Injected time, deadlines, `LiveRefreshPolicy`, `SpeedTestRunGate`, formatters, atomic JSON, logging. |
+| `Sources/SpeedCore/Support/` | Injected time, deadlines, `LiveRefreshPolicy`, `BarLayout`, `SpeedTestRunGate`, formatters, atomic JSON, logging. |
+| `Sources/SpeedCore/SpeedTest/Chain/` | Engine protocol and keys, chain policy and runner, Cloudflare and Apple adapters. |
 | `Sources/App/` | Composition/lifecycle, status item, panel/settings, power observation, test ownership, notifications and login item. |
 
 ## Rules that must hold
@@ -60,9 +63,19 @@ bare executable: notification APIs require bundle context.
   `Date` is only for human timestamps. Every network call has a deadline.
 - Live rates divide counter deltas by actual elapsed time. Stale gaps exceed
   `max(5, 3 × expectedIntervalSeconds)`; never restore the old fixed five-second limit.
+- Menu bar and panel strings scale precision to the magnitude of the value in the unit
+  being shown. Never print a bare `0.0` for traffic that is moving: below the displayed
+  resolution the string is `<0.01`, a measured zero is `0.00`, and only a missing reading
+  is an em dash. Bar strings stay within five characters.
+- `LiveReadoutModel` holds the last reading through a transient gap and requests a fresh
+  baseline at most once per gap. The refresh loop runs faster than the sampling cadence, so
+  an unlatched request would drop the baseline before a delta could be measured.
   A normal five-second Low Power Mode sleep lands slightly late and formerly caused
   every sample to be discarded. Missing counters clear the baseline and publish
-  unavailable state. Sleep, route changes and wake reset smoothing/direction too.
+  unavailable state. Sleep, wake and a change of the measured interface reset
+  smoothing and direction; route-only path changes must not, because `NWPath` yields a new
+  snapshot for DNS, gateway and address changes that leave the interface untouched. Any
+  path change still ends a running capacity test.
 - `LiveThroughputMonitor.updates()` distinguishes samples from unavailable reasons.
   It must run without the popover, recover when counters return, and retain one
   sampling loop across cadence changes. UI refresh independently checks freshness.
@@ -85,8 +98,18 @@ bare executable: notification APIs require bundle context.
   the matching `cf-meta-upload-bytes` value and matching client progress. Cancellation
   or partial data must never become a successful saved result.
 - A run remains owned through cleanup. `SpeedTestRunGate` rejects old progress,
-  overlapping starts and early restart after Stop. Spacing is 30 seconds after finish;
-  a rate limit adds a Cloudflare-only 15-minute block. Countdown time is monotonic.
+  overlapping starts and early restart after Stop. Spacing is 30 seconds after finish, and
+  backoffs are per engine: five minutes for a refusal, fifteen for a rate limit. The chain
+  skips a blocked engine rather than retrying it, and backoffs are applied whether the
+  chain succeeded or gave up. Countdown time is monotonic.
+- Every Cloudflare request carries `Referer` and `Origin`; the classic host refuses
+  download sizes in 11,000,000...19,999,999 without them, and the ladder steps around that
+  range on that host. Prefer `h3.speed.cloudflare.com`. Only an explicit refusal, rate
+  limit or interception advances the chain; a completed download phase, 64 MB transferred,
+  a timeout or a local fault stops it.
+- `SpeedTestEngineID` keeps exactly two cases and every new `SpeedTestResult` field is
+  optional. The history store moves a file it cannot decode aside, so a new case would
+  destroy history on rollback. Engine identity lives in `engineKey`/`endpointHost`.
 - Native `NWPath` equality suppresses duplicate callbacks; a changed native path
   advances generation, including changes on one adapter. The coordinator interrupts
   tests on meaningful path changes/sleep and resumes a separate connectivity probe.

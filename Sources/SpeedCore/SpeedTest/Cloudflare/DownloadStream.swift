@@ -33,7 +33,10 @@ final class DownloadStream: NSObject, URLSessionDataDelegate, SpeedTestStream, @
         let taskToCancel: URLSessionTask?
     }
 
-    init(configuration: URLSessionConfiguration) {
+    private let endpoints: CloudflareEndpoints
+
+    init(configuration: URLSessionConfiguration, endpoints: CloudflareEndpoints) {
+        self.endpoints = endpoints
         super.init()
         let queue = OperationQueue()
         queue.maxConcurrentOperationCount = 1
@@ -41,16 +44,14 @@ final class DownloadStream: NSObject, URLSessionDataDelegate, SpeedTestStream, @
     }
 
     func download(bytes: Int, nonce: String, progress: @escaping @Sendable (Int) -> Void) async throws -> TransferReceipt {
-        var request = URLRequest(url: CloudflareEndpoints.download(bytes: bytes, nonce: nonce))
-        request.httpMethod = "GET"
+        // Built by the endpoints so every transfer carries the browser headers, not just
+        // the metadata request as in v1.
+        let request = endpoints.downloadRequest(bytes: bytes, nonce: nonce)
         return try await execute(request: request, file: nil, bytes: bytes, progress: progress)
     }
 
     func upload(bytes: Int, file: URL, progress: @escaping @Sendable (Int) -> Void) async throws -> TransferReceipt {
-        var request = URLRequest(url: CloudflareEndpoints.upload)
-        request.httpMethod = "POST"
-        request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
-        request.setValue("\(bytes)", forHTTPHeaderField: "Content-Length")
+        let request = endpoints.uploadRequest(bytes: bytes)
         return try await execute(request: request, file: file, bytes: bytes, progress: progress)
     }
 

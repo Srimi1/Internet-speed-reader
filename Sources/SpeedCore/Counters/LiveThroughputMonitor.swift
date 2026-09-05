@@ -211,6 +211,11 @@ public actor LiveThroughputMonitor {
                         current: current,
                         elapsedSeconds: elapsed
                     ),
+                    downloadActivityMbps: ThroughputCalculator.downloadActivityMbps(
+                        previous: previous.counters,
+                        current: current,
+                        elapsedSeconds: elapsed
+                    ),
                     elapsedSeconds: elapsed
                 )
             ))
