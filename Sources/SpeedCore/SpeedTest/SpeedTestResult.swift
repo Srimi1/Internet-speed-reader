@@ -46,6 +46,16 @@ public struct SpeedTestResult: Sendable, Codable, Equatable, Identifiable {
     public var methodologyVersion: Int?
     public var downloadQuality: String?
     public var uploadQuality: String?
+    /// Which host actually served the measurement, e.g. "h3.speed.cloudflare.com".
+    /// Optional, like every field added after 1.0: a non-optional addition would make new
+    /// history undecodable by an older build, which discards the whole file.
+    public var endpointHost: String?
+    /// The engine key, finer-grained than `engine`, which stays at its two stored cases.
+    public var engineKey: String?
+    /// Engines that refused before this one succeeded.
+    public var fallbackFrom: [String]?
+    /// "manual" or "scheduled".
+    public var trigger: String?
 
     /// Apple's numbers live here and never mix with the Cloudflare columns.
     public var apple: AppleExtras?
@@ -84,6 +94,10 @@ public struct SpeedTestResult: Sendable, Codable, Equatable, Identifiable {
         methodologyVersion: Int? = nil,
         downloadQuality: String? = nil,
         uploadQuality: String? = nil,
+        endpointHost: String? = nil,
+        engineKey: String? = nil,
+        fallbackFrom: [String]? = nil,
+        trigger: String? = nil,
         apple: AppleExtras? = nil
     ) {
         self.id = id
@@ -119,6 +133,10 @@ public struct SpeedTestResult: Sendable, Codable, Equatable, Identifiable {
         self.methodologyVersion = methodologyVersion
         self.downloadQuality = downloadQuality
         self.uploadQuality = uploadQuality
+        self.endpointHost = endpointHost
+        self.engineKey = engineKey
+        self.fallbackFrom = fallbackFrom
+        self.trigger = trigger
         self.apple = apple
     }
 
@@ -153,8 +171,23 @@ public struct AppleExtras: Sendable, Codable, Equatable {
     }
 }
 
-public enum SpeedTestPhase: String, Sendable, Equatable {
+public enum SpeedTestPhase: String, Sendable, Equatable, CaseIterable {
     case idle, meta, latency, downloadProbe, download, uploadProbe, upload, finishing
+
+    /// Progress may only move forwards within one attempt. Lives here so the chain runner
+    /// and the UI share one ordering instead of each keeping its own list.
+    public var rank: Int {
+        switch self {
+        case .idle: return 0
+        case .meta: return 1
+        case .latency: return 2
+        case .downloadProbe: return 3
+        case .download: return 4
+        case .uploadProbe: return 5
+        case .upload: return 6
+        case .finishing: return 7
+        }
+    }
 }
 
 public struct SpeedTestProgress: Sendable, Equatable {
@@ -162,12 +195,27 @@ public struct SpeedTestProgress: Sendable, Equatable {
     public let instantaneousMbps: Double
     public let fraction: Double
     public let pingMs: Double?
+    /// Which engine attempt produced this update. A later attempt always supersedes an
+    /// earlier one, even though it restarts at the first phase.
+    public var attempt: Int
+    /// Shown while the chain moves between engines, so a fallback is visible rather than
+    /// looking like a stall.
+    public var engineLabel: String?
 
-    public init(phase: SpeedTestPhase, instantaneousMbps: Double = 0, fraction: Double = 0, pingMs: Double? = nil) {
+    public init(
+        phase: SpeedTestPhase,
+        instantaneousMbps: Double = 0,
+        fraction: Double = 0,
+        pingMs: Double? = nil,
+        attempt: Int = 0,
+        engineLabel: String? = nil
+    ) {
         self.phase = phase
         self.instantaneousMbps = instantaneousMbps
         self.fraction = fraction
         self.pingMs = pingMs
+        self.attempt = attempt
+        self.engineLabel = engineLabel
     }
 }
 
@@ -176,6 +224,9 @@ public enum SpeedTestError: Error, Sendable, Equatable {
     case offline
     case networkChanged
     case interception(String)
+    /// The server answered, and declined. Distinct from an engine fault because another
+    /// endpoint may well accept the same request.
+    case refused(status: Int)
     case rateLimited
     case insufficientData
     case timeout(SpeedTestPhase)

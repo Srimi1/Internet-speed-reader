@@ -1,33 +1,31 @@
 import AppKit
 import SpeedCore
 
+/// How prominently one direction's row is drawn.
+enum RowEmphasis: Equatable {
+    /// Nothing is transferring in either direction: both rows look the same.
+    case normal
+    /// This direction is transferring right now.
+    case active
+    /// The other direction is transferring; this one recedes without disappearing.
+    case muted
+}
+
 /// What the menu bar draws. Sendable snapshot so the controller can hand it over wholesale.
 struct StatusItemRenderModel: Equatable {
-    var downText: String = "0.0"
-    var upText: String = "0.0"
+    var downText: String = SpeedFormatter.unavailable
+    var upText: String = SpeedFormatter.unavailable
+    var downEmphasis: RowEmphasis = .normal
+    var upEmphasis: RowEmphasis = .normal
+    /// Dimmed while a reading is briefly being re-established, so a rebaseline does not
+    /// blank the bar. Unavailable draws the dash.
+    var freshness: LiveReadoutModel.Freshness = .unavailable
     /// Which direction the adaptive layout is showing right now.
     var activeDirection: TrafficDirection = .download
     var state: ConnectionDisplayState = .unknown
-    var layout: BarLayout = .adaptive
+    var layout: BarLayout = .twoLine
     var showUnits: Bool = false
     var unit: SpeedUnit = .megabitsPerSecond
-}
-
-enum BarLayout: String, CaseIterable, Codable {
-    /// One number that follows the traffic: download normally, upload while uploading.
-    case adaptive
-    case twoLine
-    case oneLine
-    case dotOnly
-
-    var title: String {
-        switch self {
-        case .adaptive: return "Active direction only"
-        case .twoLine: return "Download and upload, two lines"
-        case .oneLine: return "Download and upload, one line"
-        case .dotOnly: return "Dot only"
-        }
-    }
 }
 
 /// Custom NSView hosted inside the status button.
@@ -45,7 +43,11 @@ final class StatusItemView: NSView {
     }
 
     static let font = NSFont.monospacedDigitSystemFont(ofSize: 9, weight: .medium)
+    /// The active row is drawn heavier, so the widest string must be measured with this
+    /// font or the pinned width would be too small the moment a transfer starts.
+    static let emphasisFont = NSFont.monospacedDigitSystemFont(ofSize: 9, weight: .semibold)
     static let oneLineFont = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+    static let oneLineEmphasisFont = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold)
 
     private let dotDiameter: CGFloat = 6
     private let horizontalPadding: CGFloat = 4
@@ -66,18 +68,21 @@ final class StatusItemView: NSView {
         case .dotOnly:
             return padding + dot + 6
         case .adaptive:
-            let sample = "↓ \(widestNumber(unit: unit))" + (showUnits ? " \(unit.shortLabel)" : "")
-            return padding + dot + measure(sample, font: oneLineFont)
+            let sample = "↓ \(widestNumber(unit: unit, font: oneLineEmphasisFont))" + (showUnits ? " \(unit.shortLabel)" : "")
+            return padding + dot + measure(sample, font: oneLineEmphasisFont)
         case .oneLine:
-            let sample = "↓ \(widestNumber(unit: unit)) ↑ \(widestNumber(unit: unit))" + (showUnits ? " \(unit.shortLabel)" : "")
-            return padding + dot + measure(sample, font: oneLineFont)
+            let number = widestNumber(unit: unit, font: oneLineEmphasisFont)
+            let sample = "↓ \(number) ↑ \(number)" + (showUnits ? " \(unit.shortLabel)" : "")
+            return padding + dot + measure(sample, font: oneLineEmphasisFont)
         case .twoLine:
-            let sample = "↓ \(widestNumber(unit: unit))" + (showUnits ? " \(unit.shortLabel)" : "")
-            return padding + dot + measure(sample, font: font)
+            let sample = "↓ \(widestNumber(unit: unit, font: emphasisFont))" + (showUnits ? " \(unit.shortLabel)" : "")
+            return padding + dot + measure(sample, font: emphasisFont)
         }
     }
 
-    private static func widestNumber(unit: SpeedUnit) -> String {
+    /// Selection and measurement must use the same font, or the sample chosen as widest
+    /// at one weight is not the widest at the weight actually drawn.
+    private static func widestNumber(unit: SpeedUnit, font: NSFont) -> String {
         SpeedFormatter.widestBarSamples(unit: unit)
             .max(by: { measure($0, font: font) < measure($1, font: font) }) ?? "999.9"
     }
@@ -89,7 +94,6 @@ final class StatusItemView: NSView {
     // MARK: - Drawing
 
     override func draw(_ dirtyRect: NSRect) {
-        let textColor: NSColor = model.state.textIsRed ? .systemRed : .labelColor
         drawDot()
 
         switch model.layout {
@@ -97,20 +101,50 @@ final class StatusItemView: NSView {
             return
         case .adaptive:
             let unitSuffix = model.showUnits ? " \(model.unit.shortLabel)" : ""
-            let arrow = model.activeDirection == .upload ? "↑" : "↓"
-            let number = model.activeDirection == .upload ? model.upText : model.downText
-            draw("\(arrow) \(number)\(unitSuffix)", font: Self.oneLineFont, color: textColor, centeredVerticallyIn: bounds)
+            let isUpload = model.activeDirection == .upload
+            let arrow = isUpload ? "↑" : "↓"
+            let number = isUpload ? model.upText : model.downText
+            let emphasis = isUpload ? model.upEmphasis : model.downEmphasis
+            draw("\(arrow) \(number)\(unitSuffix)", font: font(for: emphasis, oneLine: true),
+                 color: color(for: emphasis), centeredVerticallyIn: bounds)
         case .oneLine:
             let unitSuffix = model.showUnits ? " \(model.unit.shortLabel)" : ""
+            // One row, so the heavier of the two emphases sets the font; colour still
+            // distinguishes the two halves through the attributed string below.
             let text = "↓ \(model.downText) ↑ \(model.upText)\(unitSuffix)"
-            draw(text, font: Self.oneLineFont, color: textColor, centeredVerticallyIn: bounds)
+            let emphasis: RowEmphasis = model.downEmphasis == .active || model.upEmphasis == .active ? .active : .normal
+            draw(text, font: font(for: emphasis, oneLine: true), color: color(for: .normal),
+                 centeredVerticallyIn: bounds)
         case .twoLine:
             let unitSuffix = model.showUnits ? " \(model.unit.shortLabel)" : ""
             let rowHeight = bounds.height / 2
-            draw("↓ \(model.downText)\(unitSuffix)", font: Self.font, color: textColor,
+            draw("↓ \(model.downText)\(unitSuffix)", font: font(for: model.downEmphasis, oneLine: false),
+                 color: color(for: model.downEmphasis),
                  rightAlignedIn: NSRect(x: 0, y: rowHeight - 1, width: bounds.width - horizontalPadding, height: rowHeight))
-            draw("↑ \(model.upText)\(unitSuffix)", font: Self.font, color: textColor,
+            draw("↑ \(model.upText)\(unitSuffix)", font: font(for: model.upEmphasis, oneLine: false),
+                 color: color(for: model.upEmphasis),
                  rightAlignedIn: NSRect(x: 0, y: 1, width: bounds.width - horizontalPadding, height: rowHeight))
+        }
+    }
+
+    private func font(for emphasis: RowEmphasis, oneLine: Bool) -> NSFont {
+        switch (emphasis, oneLine) {
+        case (.active, true): return Self.oneLineEmphasisFont
+        case (.active, false): return Self.emphasisFont
+        case (_, true): return Self.oneLineFont
+        case (_, false): return Self.font
+        }
+    }
+
+    private func color(for emphasis: RowEmphasis) -> NSColor {
+        // Offline colours everything red regardless of which direction is moving.
+        if model.state.textIsRed { return .systemRed }
+        // A held reading is real but a moment old, so it is dimmed rather than replaced.
+        if model.freshness == .holding { return .tertiaryLabelColor }
+        switch emphasis {
+        case .active: return .labelColor
+        case .normal: return .labelColor
+        case .muted: return .secondaryLabelColor
         }
     }
 
@@ -153,15 +187,24 @@ final class StatusItemView: NSView {
 
     private func updateAccessibility() {
         setAccessibilityLabel("Internet speed")
-        let value: String
-        if model.layout == .adaptive {
-            let direction = model.activeDirection == .upload ? "Uploading" : "Downloading"
-            let number = model.activeDirection == .upload ? model.upText : model.downText
-            value = "\(direction) at \(number) \(model.unit.shortLabel), \(model.state.spokenDescription)"
-        } else {
-            value = "Download \(model.downText), upload \(model.upText) \(model.unit.shortLabel), \(model.state.spokenDescription)"
+        setAccessibilityValue(accessibilityValue())
+    }
+
+    /// Spoken description of the current readout, also used for the status button itself.
+    func accessibilityValue() -> String {
+        let unit = model.unit.shortLabel
+        if model.freshness == .unavailable {
+            return "Live reading unavailable, \(model.state.spokenDescription)"
         }
-        setAccessibilityValue(value)
+        if model.layout == .adaptive {
+            let isUpload = model.activeDirection == .upload
+            let direction = isUpload ? "Uploading" : "Downloading"
+            let number = isUpload ? model.upText : model.downText
+            return "\(direction) at \(number) \(unit), \(model.state.spokenDescription)"
+        }
+        let down = "Download \(model.downText)\(model.downEmphasis == .active ? " (downloading)" : "")"
+        let up = "upload \(model.upText)\(model.upEmphasis == .active ? " (uploading)" : "")"
+        return "\(down), \(up) \(unit), \(model.state.spokenDescription)"
     }
 
     override func accessibilityRole() -> NSAccessibility.Role? { .staticText }

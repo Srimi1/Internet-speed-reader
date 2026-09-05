@@ -8,9 +8,9 @@ import SpeedCore
 @MainActor
 final class AppSettings {
     enum Key: String {
-        case barLayout, unit, showUnits, refreshPolicy
+        case barLayout, barLayoutMigratedV2, unit, showUnits, refreshPolicy
         case notifyOnDrop, notifyOnRestore, notifyAfterSeconds, minimumOutageSeconds
-        case downloadStreams, uploadStreams, phaseSeconds, dataSaver, confirmOnMetered
+        case downloadStreams, uploadStreams, phaseSeconds, dataSaver, confirmOnMetered, speedTestEngine
         case appleMaxSeconds, reopenPanelOnFinish
         case launchAtLoginWanted
     }
@@ -40,6 +40,8 @@ final class AppSettings {
     var phaseSeconds: Double { didSet { set(phaseSeconds, .phaseSeconds) } }
     var dataSaver: Bool { didSet { set(dataSaver, .dataSaver) } }
     var confirmOnMetered: Bool { didSet { set(confirmOnMetered, .confirmOnMetered) } }
+    /// Which measurement service GO uses. Automatic tries each in turn.
+    var speedTestEngine: SpeedTestEngineChoice { didSet { set(speedTestEngine.rawValue, .speedTestEngine) } }
     var appleMaxSeconds: Int { didSet { set(appleMaxSeconds, .appleMaxSeconds) } }
     var reopenPanelOnFinish: Bool { didSet { set(reopenPanelOnFinish, .reopenPanelOnFinish) } }
     /// The user's intent, separate from what the system currently has registered. On by
@@ -49,7 +51,17 @@ final class AppSettings {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        barLayout = BarLayout(rawValue: defaults.string(forKey: Key.barLayout.rawValue) ?? "") ?? .adaptive
+        // 2.0 shows both directions by default. A 1.x preference of the single-number
+        // layout is moved across once, because it was the old default rather than a
+        // deliberate choice for most people; the flag lets a 2.0 re-selection stick.
+        let storedLayout = defaults.string(forKey: Key.barLayout.rawValue)
+        let migratedLayout = defaults.object(forKey: Key.barLayoutMigratedV2.rawValue) as? Bool ?? false
+        if !migratedLayout, storedLayout == BarLayout.adaptive.rawValue {
+            barLayout = .twoLine
+        } else {
+            barLayout = BarLayout(storedValue: storedLayout)
+        }
+        defaults.set(true, forKey: Key.barLayoutMigratedV2.rawValue)
         unit = SpeedUnit(rawValue: defaults.string(forKey: Key.unit.rawValue) ?? "") ?? .megabitsPerSecond
         showUnits = defaults.object(forKey: Key.showUnits.rawValue) as? Bool ?? false
         refreshPolicy = RefreshPolicy(storedValue: defaults.string(forKey: Key.refreshPolicy.rawValue))
@@ -62,10 +74,13 @@ final class AppSettings {
         phaseSeconds = defaults.object(forKey: Key.phaseSeconds.rawValue) as? Double ?? 10
         dataSaver = defaults.object(forKey: Key.dataSaver.rawValue) as? Bool ?? false
         confirmOnMetered = defaults.object(forKey: Key.confirmOnMetered.rawValue) as? Bool ?? true
+        speedTestEngine = SpeedTestEngineChoice(storedValue: defaults.string(forKey: Key.speedTestEngine.rawValue))
         appleMaxSeconds = defaults.object(forKey: Key.appleMaxSeconds.rawValue) as? Int ?? 15
         reopenPanelOnFinish = defaults.object(forKey: Key.reopenPanelOnFinish.rawValue) as? Bool ?? true
         launchAtLoginWanted = defaults.object(forKey: Key.launchAtLoginWanted.rawValue) as? Bool ?? true
         defaults.set(refreshPolicy.rawValue, forKey: Key.refreshPolicy.rawValue)
+        defaults.set(barLayout.rawValue, forKey: Key.barLayout.rawValue)
+        defaults.set(speedTestEngine.rawValue, forKey: Key.speedTestEngine.rawValue)
     }
 
     private func set(_ value: Any, _ key: Key) {
@@ -81,6 +96,16 @@ final class AppSettings {
             options.uploadSeconds = max(4, phaseSeconds - 2)
         }
         return options
+    }
+
+    /// Everything one run needs, composed from the stored preferences.
+    func speedTestRequest(interfaceName: String?, trigger: String = "manual") -> SpeedTestRequest {
+        SpeedTestRequest(
+            interfaceName: interfaceName,
+            cloudflareOptions: speedTestOptions,
+            appleMaxSeconds: appleMaxSeconds,
+            trigger: trigger
+        )
     }
 
     /// Rough data cost of one test, so the estimate in Settings is honest.

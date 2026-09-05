@@ -8,7 +8,10 @@ What the approved plan (`docs/PLAN.md`) still leaves open after v1.0.0, what the
 
 - **Loaded latency.** Run a zero-byte request every 500 ms on its own session during the download and upload phases and store the per-direction medians in the `downloadLoadedLatencyMs` and `uploadLoadedLatencyMs` fields that `SpeedTestResult` already has.
 - **ISP fallback chain.** After `/meta` fails, read `asn`, `city` and `colo` from a `__down` response, then `apple-client-asn-company` from `https://mensura.cdn-apple.com/.well-known/nq`, before falling back to "Unknown ISP". Show the colo that served the download rather than the one `/meta` reports.
-- **Wire the inert settings.** `notifyOnDrop`, `notifyOnRestore`, `notifyAfterSeconds`, `minimumOutageSeconds`, `refreshPolicy`, `confirmOnMetered` and `appleMaxSeconds` are shown in Settings but nothing reads them. Pass them into `ConnectivityStateMachine.Config`, `OutageLedger`, `LiveThroughputMonitor.setCadence` and `NetworkQualityRunner.run(maxSeconds:)`, and check the two notify flags in `AppCoordinator.handle(_:engine:)`.
+- **Wire the inert settings.** `notifyOnDrop`, `notifyOnRestore`, `notifyAfterSeconds`,
+  `minimumOutageSeconds` and `confirmOnMetered` are shown in Settings but nothing reads
+  them. (`refreshPolicy` and `appleMaxSeconds` ARE read; this line previously said
+  otherwise. `reopenPanelOnFinish` and the notification actions were wired in 2.0.) Pass them into `ConnectivityStateMachine.Config`, `OutageLedger`, `LiveThroughputMonitor.setCadence` and `NetworkQualityRunner.run(maxSeconds:)`, and check the two notify flags in `AppCoordinator.handle(_:engine:)`.
 - **Metered and Low Power confirmation.** Before a test, check `PathSnapshot.isExpensive`, `isConstrained` and `ProcessInfo.isLowPowerModeEnabled`, and show a sheet with the estimate from `AppSettings.estimatedBytesPerTest`. Also refuse to start while the state is `captivePortal` or `offline`.
 - **Reopen the panel on finish.** Call `StatusItemController.reopenPanelForResult()` when `SpeedTestController` finishes and `reopenPanelOnFinish` is on. Both halves exist; only the call is missing.
 - **Notification actions.** Assign `NotificationService.onRunTestRequested` and `onShowLogRequested` so the "Run Speed Test" and "Show Outage Log" buttons on the outage banner do something.

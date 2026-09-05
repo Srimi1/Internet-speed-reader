@@ -5,9 +5,9 @@ public enum ResponseValidation: Sendable, Equatable {
     /// Something answered, but not with the bytes we asked for. Never turn this into
     /// a number: a captive portal returning HTML would otherwise be measured as speed.
     case intercepted(reason: String)
-    /// Legacy name for HTTP 403 advertising a one-byte body. The refusal's cause
-    /// is unknown; this does not establish a byte cap or a rate limit.
-    case byteCapExceeded
+    /// The server declined the request. Another endpoint may accept it, so the chain
+    /// treats this differently from an engine fault.
+    case refused(Int)
     case rateLimited
     case badStatus(Int)
 }
@@ -19,11 +19,10 @@ public enum ResponseValidator {
         expectedContentLength: Int64,
         requestedBytes: Int
     ) -> ResponseValidation {
-        if status == 403 {
-            return expectedContentLength == 1 ? .byteCapExceeded : .badStatus(403)
-        }
         if status == 429 { return .rateLimited }
-        guard status == 200 else { return .badStatus(status) }
+        // Any non-200 from the server itself is a refusal, including the 403 the legacy
+        // host returns for certain byte counts when the browser headers are missing.
+        guard status == 200 else { return .refused(status) }
 
         let mediaType = contentType?.split(separator: ";", maxSplits: 1).first?
             .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -44,7 +43,7 @@ public enum ResponseValidator {
         sentBytes: Int
     ) -> ResponseValidation {
         if status == 429 { return .rateLimited }
-        guard status == 200 else { return .badStatus(status) }
+        guard status == 200 else { return .refused(status) }
 
         // The server echoes what it actually received, which is the only trustworthy
         // confirmation that the upload really happened.
@@ -73,7 +72,7 @@ extension ResponseValidation {
         case .valid: return
         case .intercepted(let reason): throw SpeedTestError.interception(reason)
         case .rateLimited: throw SpeedTestError.rateLimited
-        case .byteCapExceeded: throw SpeedTestError.engineFailure("Cloudflare refused the download request (HTTP 403)")
+        case .refused(let status): throw SpeedTestError.refused(status: status)
         case .badStatus(let status): throw SpeedTestError.engineFailure("Speed test server returned HTTP \(status)")
         }
     }

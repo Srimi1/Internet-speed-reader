@@ -115,12 +115,7 @@ struct SpeedTestPipelineTests {
                 do { _ = try await engine.run { _ in }; Issue.record("Rejected control request must fail") }
                 catch {
                     if status == 429 { #expect(error as? SpeedTestError == .rateLimited) }
-                    else {
-                        guard case .engineFailure(let message) = error as? SpeedTestError else {
-                            Issue.record("HTTP 403 must identify a server refusal"); continue
-                        }
-                        #expect(message.contains("HTTP 403"))
-                    }
+                    else { #expect(error as? SpeedTestError == .refused(status: 403)) }
                 }
                 #expect(stats.value.withLock { $0.requests.isEmpty })
             }

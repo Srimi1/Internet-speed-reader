@@ -36,7 +36,8 @@ public enum RouteMessageParser {
                     result[index] = IFCounters(
                         rx: header2.ifm_data.ifi_ibytes,
                         tx: header2.ifm_data.ifi_obytes,
-                        txPackets: header2.ifm_data.ifi_opackets
+                        txPackets: header2.ifm_data.ifi_opackets,
+                        rxPackets: header2.ifm_data.ifi_ipackets
                     )
                 }
             }

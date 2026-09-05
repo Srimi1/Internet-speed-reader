@@ -13,7 +13,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Belt and braces alongside LSUIElement: no Dock icon, no app menu bar.
         NSApp.setActivationPolicy(.accessory)
 
-        statusItemController = StatusItemController(coordinator: coordinator)
+        let controller = StatusItemController(coordinator: coordinator)
+        statusItemController = controller
+        // Before start(), so a test finishing early still has somewhere to present.
+        coordinator.panelPresenter = controller
         coordinator.start()
 
         Log.app.info("Internet Speed Reader launched")

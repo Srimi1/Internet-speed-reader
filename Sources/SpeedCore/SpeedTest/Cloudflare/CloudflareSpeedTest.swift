@@ -28,18 +28,41 @@ public actor CloudflareSpeedTest {
     private let time: any TimeSource
     private let fixtures: UploadFixture
     private let transport: any CloudflareTransport
+    private let endpoints: CloudflareEndpoints
+    private let ladder: ChunkLadder
 
-    public init(time: any TimeSource = SystemTimeSource(), fixtures: UploadFixture? = nil) {
+    public init(
+        time: any TimeSource = SystemTimeSource(),
+        fixtures: UploadFixture? = nil,
+        endpoints: CloudflareEndpoints = .h3
+    ) {
         self.time = time
         self.fixtures = fixtures ?? ((try? UploadFixture.makeDefault()) ?? UploadFixture(directory: FileManager.default.temporaryDirectory))
-        self.transport = URLSessionCloudflareTransport()
+        self.endpoints = endpoints
+        self.transport = URLSessionCloudflareTransport(endpoints: endpoints)
+        self.ladder = Self.makeLadder(for: endpoints)
     }
 
-    init(time: any TimeSource, fixtures: UploadFixture, transport: any CloudflareTransport) {
+    init(
+        time: any TimeSource,
+        fixtures: UploadFixture,
+        transport: any CloudflareTransport,
+        endpoints: CloudflareEndpoints = .h3
+    ) {
         self.time = time
         self.fixtures = fixtures
         self.transport = transport
+        self.endpoints = endpoints
+        self.ladder = Self.makeLadder(for: endpoints)
     }
+
+    /// Only the legacy host has a known refused band; the other needs no special sizing.
+    private static func makeLadder(for endpoints: CloudflareEndpoints) -> ChunkLadder {
+        endpoints.key == .cloudflareLegacy ? ChunkLadder(refusedRange: ChunkLadder.refusedRange) : ChunkLadder()
+    }
+
+    /// The host this engine measures against, recorded with the result.
+    public var endpointHost: String { endpoints.displayHost }
 
     public static func makeSessionConfiguration(timeoutSeconds: Double) -> URLSessionConfiguration {
         let config = URLSessionConfiguration.ephemeral
@@ -52,7 +75,7 @@ public actor CloudflareSpeedTest {
         config.timeoutIntervalForResource = timeoutSeconds
         config.httpAdditionalHeaders = [
             "Accept-Encoding": "identity",
-            "User-Agent": "InternetSpeedReader/1.1 (macOS; +https://github.com/Srimi1/Internet-speed-reader)",
+            "User-Agent": "InternetSpeedReader/2.0 (macOS; +https://github.com/Srimi1/Internet-speed-reader)",
         ]
         return config
     }
@@ -63,7 +86,8 @@ public actor CloudflareSpeedTest {
         try Task.checkCancellation()
         let runStart = time.now()
         var result = SpeedTestResult(engine: .cloudflare, startedAt: time.wallClock(), interfaceName: interfaceName,
-                                     methodologyVersion: Self.methodologyVersion)
+                                     methodologyVersion: Self.methodologyVersion,
+                                     endpointHost: endpoints.displayHost, engineKey: endpoints.key.rawValue)
 
         progress(SpeedTestProgress(phase: .meta))
         Log.speedTest.info("Cloudflare phase meta started")
@@ -126,12 +150,15 @@ public actor CloudflareSpeedTest {
     private func fetchMeta() async throws -> CloudflareMeta? {
         do {
             let transport = self.transport
+            let request = endpoints.metaRequest()
             let (data, response) = try await withDeadline(.seconds(4), clock: time) {
-                try await transport.data(for: CloudflareEndpoints.metaRequest(), timeoutSeconds: 4)
+                try await transport.data(for: request, timeoutSeconds: 4)
             }
             CloudflareResponseDiagnostics.record(response, phase: "meta")
             if response.statusCode == 429 { throw SpeedTestError.rateLimited }
-            if response.statusCode == 403 { throw SpeedTestError.engineFailure("Cloudflare refused the metadata request (HTTP 403)") }
+            // A refusal here must let the chain try the next host, so it is not an
+            // engine fault: metadata is the endpoint most likely to be header-gated.
+            if response.statusCode == 403 { throw SpeedTestError.refused(status: 403) }
             guard response.statusCode == 200 else { return nil }
             return try? JSONDecoder().decode(CloudflareMeta.self, from: data)
         } catch {
@@ -157,7 +184,7 @@ public actor CloudflareSpeedTest {
             try Task.checkCancellation()
             let remaining = deadline.seconds(since: time.now())
             guard remaining > 0 else { break }
-            let request = URLRequest(url: CloudflareEndpoints.download(bytes: 0, nonce: "\(nonce)-l\(index)"))
+            let request = endpoints.downloadRequest(bytes: 0, nonce: "\(nonce)-l\(index)")
             let started = time.now()
             do {
                 let transport = self.transport
@@ -206,6 +233,7 @@ public actor CloudflareSpeedTest {
         let time = self.time
         let transport = self.transport
         let fixtures = self.fixtures
+        let ladder = self.ladder
         let uploadFiles: [Int: URL]
         if direction == .upload {
             progress(SpeedTestProgress(phase: .uploadProbe, fraction: 0.62))
@@ -278,7 +306,7 @@ public actor CloudflareSpeedTest {
                                 let duration = time.now().seconds(since: requestStart)
                                 if duration > 0 {
                                     let rate = Double(receipt.bytes) / duration
-                                    nextBytes = direction == .download ? ChunkLadder().size(forPerStreamBytesPerSecond: rate)
+                                    nextBytes = direction == .download ? ladder.size(forPerStreamBytesPerSecond: rate)
                                         : fixtures.rung(forPerStreamBytesPerSecond: rate)
                                 }
                             } catch is CancellationError {

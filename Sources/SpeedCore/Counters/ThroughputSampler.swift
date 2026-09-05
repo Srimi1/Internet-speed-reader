@@ -7,8 +7,12 @@ public struct ThroughputSample: Sendable, Equatable {
     public let at: ContinuousClock.Instant
     /// True when a speed test was running, so the UI can shade the spike it caused.
     public let duringTest: Bool
-    /// Used only to select the arrow; the displayed rate remains the measured byte rate.
+    /// Used only to select the arrow and to emphasise a row; the displayed rate remains
+    /// the measured byte rate.
     public let uploadActivityMbps: Double
+    /// The same allowance applied to received bytes, so the acknowledgements of a large
+    /// upload do not read as an active download.
+    public let downloadActivityMbps: Double
     public let elapsedSeconds: Double
 
     public init(
@@ -18,6 +22,7 @@ public struct ThroughputSample: Sendable, Equatable {
         at: ContinuousClock.Instant,
         duringTest: Bool = false,
         uploadActivityMbps: Double? = nil,
+        downloadActivityMbps: Double? = nil,
         elapsedSeconds: Double = 1
     ) {
         self.downMbps = downMbps
@@ -26,6 +31,7 @@ public struct ThroughputSample: Sendable, Equatable {
         self.at = at
         self.duringTest = duringTest
         self.uploadActivityMbps = uploadActivityMbps ?? upMbps
+        self.downloadActivityMbps = downloadActivityMbps ?? downMbps
         self.elapsedSeconds = elapsedSeconds
     }
 }
@@ -80,7 +86,7 @@ public struct ThroughputCalculator: Sendable {
         // 64-bit counters cannot legitimately wrap in any human timeframe, so a decrease
         // means the interface was reset (Wi-Fi toggled, dock/undock, VPN up/down).
         guard current.rx >= previous.rx, current.tx >= previous.tx,
-              current.txPackets >= previous.txPackets else {
+              current.txPackets >= previous.txPackets, current.rxPackets >= previous.rxPackets else {
             return .rebaseline(reason: .counterWentBackwards)
         }
 
@@ -94,6 +100,10 @@ public struct ThroughputCalculator: Sendable {
         return .rate(downMbps: downMbps, upMbps: upMbps)
     }
 
+    /// Bytes per packet allowed for pure control traffic before a direction counts as
+    /// carrying payload. Sized for an acknowledgement plus headers.
+    public static let controlAllowanceBytesPerPacket: Double = 160
+
     /// Conservative evidence of upload payload, not a protocol parser. In particular,
     /// many ACKs can hide a small simultaneous upload inside this allowance. VPN/QUIC
     /// traffic can also exceed it. Never subtract this allowance from the shown speed.
@@ -102,11 +112,33 @@ public struct ThroughputCalculator: Sendable {
         current: IFCounters,
         elapsedSeconds: Double
     ) -> Double {
-        guard elapsedSeconds.isFinite, elapsedSeconds > 0,
-              current.tx >= previous.tx, current.txPackets >= previous.txPackets else { return 0 }
-        let bytes = Double(current.tx - previous.tx)
-        let controlAllowance = Double(current.txPackets - previous.txPackets) * 160
-        return max(0, bytes - controlAllowance) * 8 / 1_000_000 / elapsedSeconds
+        guard current.tx >= previous.tx, current.txPackets >= previous.txPackets else { return 0 }
+        return activityMbps(
+            bytes: current.tx - previous.tx,
+            packets: current.txPackets - previous.txPackets,
+            elapsedSeconds: elapsedSeconds
+        )
+    }
+
+    /// The mirror of the upload allowance. A large upload generates a steady stream of
+    /// small acknowledgements; without this the download row would light up during it.
+    public static func downloadActivityMbps(
+        previous: IFCounters,
+        current: IFCounters,
+        elapsedSeconds: Double
+    ) -> Double {
+        guard current.rx >= previous.rx, current.rxPackets >= previous.rxPackets else { return 0 }
+        return activityMbps(
+            bytes: current.rx - previous.rx,
+            packets: current.rxPackets - previous.rxPackets,
+            elapsedSeconds: elapsedSeconds
+        )
+    }
+
+    private static func activityMbps(bytes: UInt64, packets: UInt64, elapsedSeconds: Double) -> Double {
+        guard elapsedSeconds.isFinite, elapsedSeconds > 0 else { return 0 }
+        let allowance = Double(packets) * controlAllowanceBytesPerPacket
+        return max(0, Double(bytes) - allowance) * 8 / 1_000_000 / elapsedSeconds
     }
 }
 

@@ -1,3 +1,4 @@
+import SpeedCore
 import SwiftUI
 
 /// The 270-degree arc behind the GO button.
@@ -24,6 +25,7 @@ struct GaugeArc: Shape {
 
 struct GaugeView: View {
     let mbps: Double
+    let unit: SpeedUnit
     let isRunning: Bool
     let phaseLabel: String
     let canStart: Bool
@@ -58,11 +60,11 @@ struct GaugeView: View {
 
             VStack(spacing: 2) {
                 if isRunning {
-                    Text(SpeedFormatterBridge.panel(mbps))
+                    Text(SpeedFormatterBridge.panel(mbps, unit: unit))
                         .font(.system(size: 26, weight: .semibold, design: .rounded))
                         .monospacedDigit()
                         .contentTransition(.numericText())
-                    Text(phaseLabel)
+                    Text("\(unit.shortLabel) · \(phaseLabel)")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     Button("Stop", action: onStop)
@@ -91,7 +93,7 @@ struct GaugeView: View {
 
 /// Small shim so SwiftUI views can format speeds without importing the whole core.
 enum SpeedFormatterBridge {
-    static func panel(_ mbps: Double) -> String {
-        SpeedCoreFormatter.panel(mbps)
+    static func panel(_ mbps: Double, unit: SpeedUnit) -> String {
+        SpeedCoreFormatter.panel(mbps, unit: unit)
     }
 }

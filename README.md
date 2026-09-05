@@ -26,10 +26,12 @@ outage without opening another window.
 
 - **Automatic live readings.** One-second updates by default, with an optional battery
   policy and recovery after missing counters, network changes and wake.
-- **The direction that matters.** Download is the default, including `↓ 0.0` when idle.
-  Sustained upload activity takes priority, even during a faster download.
-- **Both directions on demand.** Click the menu bar item for live download and upload;
-  use **Go / Stop** to control a capacity test.
+- **Both directions, always.** Download over upload in the menu bar, with whichever
+  direction is transferring drawn in bold. A single-number layout is still selectable.
+- **Numbers you can read.** Precision follows the size of the value in the unit you chose,
+  so small but real traffic shows as `0.02` or `<0.01` instead of rounding away to zero.
+- **Capacity when you ask for it.** **Go** tries Cloudflare's measurement host, then its
+  classic host, then Apple's built-in tool, and tells you which one answered.
 - **Clear measurement status.** Unavailable or stale live data shows `—`. Tests show
   errors and quality labels; previous results retain their time and measurement method.
 - **Connection awareness.** Outage detection, a local outage log and silent notification
@@ -128,16 +130,17 @@ Read the [security policy](SECURITY.md) for private vulnerability reporting and 
 
 ## Current status and limits
 
-Version **1.1.0** adds automatic-monitoring recovery and validated test accounting.
-The core suite has **125 passing tests** covering timing, counters, direction selection,
-transport failures, cancellation, subprocess cleanup and history compatibility.
-See the [changelog](CHANGELOG.md) and [verification report](docs/VERIFICATION-1.1.md)
-for the tested scope and remaining checks.
+Version **2.0.0** shows both directions by default, stops rounding real traffic to zero,
+and replaces the single capacity provider with a fallback chain. The core suite has
+**187 passing tests**. See the [changelog](CHANGELOG.md) and the
+[verification report](docs/v2/VERIFICATION-2.0.md) for the tested scope and what is still
+unchecked.
 
-- During v1.1.0 verification, Cloudflare refused a download request with **HTTP 403**.
-  The app reports the refusal and does not save a successful result. Apple Deep Test
-  remains an alternative. Three successful sequential Cloudflare comparisons are
-  still outstanding; there is no claim of parity with Ookla.
+- The HTTP 403 that broke capacity tests in 1.1.0 was traced to two missing request
+  headers combined with a request size the classic host refuses. Both are fixed, and the
+  refusal was reproduced and confirmed resolved against the live endpoints.
+- A full Go run through the installed app, sleep and wake, and a real VPN have not been
+  re-verified on 2.0.0. There is no claim of parity with any other speed test.
 - Capacity tests are manual and transfer real data. Data-saver mode reduces budgets;
   the displayed usage estimate is approximate.
 - Some existing Settings controls remain unwired, including metered-test confirmation,

@@ -44,6 +44,8 @@ struct CloudflareMetaTests {
 
 @Suite("Response validation")
 struct ResponseValidatorTests {
+    /// A refusal and a rate limit earn different backoffs, so they must not collapse into
+    /// one error. Both are server answers, not engine faults, so the chain can move on.
     @Test("HTTP 403 refusals are not reported as HTTP 429 rate limits")
     func distinguishesRefusalFromRateLimit() throws {
         let refused = [
@@ -54,10 +56,7 @@ struct ResponseValidatorTests {
         for outcome in refused {
             do { try outcome.requireValid(); Issue.record("HTTP 403 must fail") }
             catch {
-                guard case .engineFailure(let message) = error as? SpeedTestError else {
-                    Issue.record("HTTP 403 must be an explicit server failure"); continue
-                }
-                #expect(message.contains("HTTP 403"))
+                #expect(error as? SpeedTestError == .refused(status: 403))
             }
         }
         #expect(ResponseValidator.validateDownload(status: 429, contentType: nil, expectedContentLength: 1, requestedBytes: 0) == .rateLimited)
@@ -82,13 +81,20 @@ struct ResponseValidatorTests {
         guard case .intercepted = outcome else { Issue.record("a short body must be rejected"); return }
     }
 
-    @Test("The byte-cap rejection is recognised rather than read as a network failure")
-    func recognisesByteCap() {
-        // Cloudflare answers 403 with a one-byte body when asked for too much.
+    /// A refusal is the server declining, not the engine breaking: the chain may still
+    /// get a measurement from a different host, so the two must stay distinguishable.
+    @Test("A refusal is reported as a refusal, not a network failure")
+    func recognisesRefusal() {
         let outcome = ResponseValidator.validateDownload(
             status: 403, contentType: nil, expectedContentLength: 1, requestedBytes: 104_857_600
         )
-        #expect(outcome == .byteCapExceeded)
+        #expect(outcome == .refused(403))
+        #expect(ResponseValidator.validateDownload(
+            status: 503, contentType: nil, expectedContentLength: 1024, requestedBytes: 1024
+        ) == .refused(503))
+        #expect(ResponseValidator.validateUpload(
+            status: 403, confirmedBytesHeader: nil, sentBytes: 1024
+        ) == .refused(403))
     }
 
     @Test("A valid chunk passes")
