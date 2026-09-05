@@ -1,7 +1,6 @@
 # Roadmap
 
-> Privacy note: personal signing, local paths and network metadata in this archived
-> document were generalized. Example values are not captured personal data.
+**2026-09-05 update:** This roadmap preserves the v1.0 backlog and limitations. Its earlier Cloudflare byte-cap and HTTP 403 assumptions are superseded: v1.1 received HTTP 403 for a 16 MiB download, whose cause remains unknown. The 50 MiB ceiling is a conservative client choice, not a published endpoint limit. Only HTTP 429 triggers the 15-minute backoff; HTTP 403 is an explicit refusal. See [current verification](VERIFICATION-1.1.md).
 
 What the approved plan (`docs/PLAN.md`) still leaves open after v1.0.0, what the shipped build cannot do, and the next things worth doing. Nothing here is a commitment or a date. Every item was checked against the code before being listed.
 

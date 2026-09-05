@@ -7,19 +7,26 @@ public struct ThroughputSample: Sendable, Equatable {
     public let at: ContinuousClock.Instant
     /// True when a speed test was running, so the UI can shade the spike it caused.
     public let duringTest: Bool
+    /// Used only to select the arrow; the displayed rate remains the measured byte rate.
+    public let uploadActivityMbps: Double
+    public let elapsedSeconds: Double
 
     public init(
         downMbps: Double,
         upMbps: Double,
         interfaceName: String,
         at: ContinuousClock.Instant,
-        duringTest: Bool = false
+        duringTest: Bool = false,
+        uploadActivityMbps: Double? = nil,
+        elapsedSeconds: Double = 1
     ) {
         self.downMbps = downMbps
         self.upMbps = upMbps
         self.interfaceName = interfaceName
         self.at = at
         self.duringTest = duringTest
+        self.uploadActivityMbps = uploadActivityMbps ?? upMbps
+        self.elapsedSeconds = elapsedSeconds
     }
 }
 
@@ -31,7 +38,7 @@ public struct ThroughputSample: Sendable, Equatable {
 public struct ThroughputCalculator: Sendable {
     /// Above this the sample is nonsense and gets discarded rather than shown.
     public static let sanityCeilingMbps: Double = 50_000
-    /// Gaps longer than this mean the process was napped or the machine slept.
+    /// Minimum stale threshold; intentional slow sampling needs a larger window.
     public static let staleGapSeconds: Double = 5.0
     /// Below this the division amplifies jitter too much to be meaningful.
     public static let minimumIntervalSeconds: Double = 0.2
@@ -52,17 +59,28 @@ public struct ThroughputCalculator: Sendable {
 
     public init() {}
 
+    public static func maximumGapSeconds(expectedIntervalSeconds: Double) -> Double {
+        let interval = expectedIntervalSeconds.isFinite && expectedIntervalSeconds > 0
+            ? expectedIntervalSeconds : 1
+        // A five-second low-power cadence normally lands just after five seconds. The
+        // former fixed limit discarded every such reading and left the bar frozen.
+        return max(staleGapSeconds, 3 * interval)
+    }
+
     public func evaluate(
         previous: IFCounters,
         current: IFCounters,
-        elapsedSeconds: Double
+        elapsedSeconds: Double,
+        expectedIntervalSeconds: Double = 1
     ) -> Outcome {
         guard elapsedSeconds >= Self.minimumIntervalSeconds else { return .tooSoon }
-        guard elapsedSeconds <= Self.staleGapSeconds else { return .rebaseline(reason: .staleGap) }
+        guard elapsedSeconds <= Self.maximumGapSeconds(expectedIntervalSeconds: expectedIntervalSeconds)
+        else { return .rebaseline(reason: .staleGap) }
 
         // 64-bit counters cannot legitimately wrap in any human timeframe, so a decrease
         // means the interface was reset (Wi-Fi toggled, dock/undock, VPN up/down).
-        guard current.rx >= previous.rx, current.tx >= previous.tx else {
+        guard current.rx >= previous.rx, current.tx >= previous.tx,
+              current.txPackets >= previous.txPackets else {
             return .rebaseline(reason: .counterWentBackwards)
         }
 
@@ -75,4 +93,50 @@ public struct ThroughputCalculator: Sendable {
 
         return .rate(downMbps: downMbps, upMbps: upMbps)
     }
+
+    /// Conservative evidence of upload payload, not a protocol parser. In particular,
+    /// many ACKs can hide a small simultaneous upload inside this allowance. VPN/QUIC
+    /// traffic can also exceed it. Never subtract this allowance from the shown speed.
+    public static func uploadActivityMbps(
+        previous: IFCounters,
+        current: IFCounters,
+        elapsedSeconds: Double
+    ) -> Double {
+        guard elapsedSeconds.isFinite, elapsedSeconds > 0,
+              current.tx >= previous.tx, current.txPackets >= previous.txPackets else { return 0 }
+        let bytes = Double(current.tx - previous.tx)
+        let controlAllowance = Double(current.txPackets - previous.txPackets) * 160
+        return max(0, bytes - controlAllowance) * 8 / 1_000_000 / elapsedSeconds
+    }
+}
+
+/// Keeps the same one-second half-life on AC, battery and low-power cadences.
+public struct ThroughputSmoother: Sendable {
+    private var previous: (down: Double, up: Double)?
+
+    public init() {}
+
+    public mutating func update(
+        downMbps: Double,
+        upMbps: Double,
+        elapsedSeconds: Double
+    ) -> (downMbps: Double, upMbps: Double) {
+        let down = downMbps.isFinite ? max(0, downMbps) : 0
+        let up = upMbps.isFinite ? max(0, upMbps) : 0
+        guard let previous else {
+            self.previous = (down, up)
+            return (down, up)
+        }
+        let elapsed = elapsedSeconds.isFinite ? max(0, elapsedSeconds) : 1
+        let weight = 1 - pow(0.5, elapsed)
+        // Idle background chatter should read as measured, not as a decaying old transfer.
+        let result = (
+            down < ActiveDirectionSelector.entryMbps ? down : previous.down + (down - previous.down) * weight,
+            up < ActiveDirectionSelector.entryMbps ? up : previous.up + (up - previous.up) * weight
+        )
+        self.previous = result
+        return result
+    }
+
+    public mutating func reset() { previous = nil }
 }

@@ -47,4 +47,31 @@ struct ActiveInterfaceSelectorTests {
         ])
         #expect(selected?.name == "en5")
     }
+
+    @Test("An in-use physical type wins over a merely available adapter")
+    func activePathTypeWins() {
+        let selected = ActiveInterfaceSelector.select(from: [
+            iface("en5", 14, .wiredEthernet),
+            PathSnapshot.Interface(name: "en0", index: 11, kind: .wifi, isUsedByPath: true),
+        ])
+        #expect(selected?.name == "en0")
+    }
+
+    @Test("Physical bytes are preferred even when a VPN is marked in use")
+    func activeTunnelDoesNotDoubleCount() {
+        let selected = ActiveInterfaceSelector.select(from: [
+            PathSnapshot.Interface(name: "utun4", index: 21, kind: .tunnel, isUsedByPath: true),
+            iface("en0", 11, .wifi),
+        ])
+        #expect(selected?.name == "en0")
+    }
+
+    @Test("Two adapters with the same active type retain deterministic path order")
+    func sameTypeKeepsOrder() {
+        let selected = ActiveInterfaceSelector.select(from: [
+            PathSnapshot.Interface(name: "en5", index: 14, kind: .wiredEthernet, isUsedByPath: true),
+            PathSnapshot.Interface(name: "en6", index: 15, kind: .wiredEthernet, isUsedByPath: true),
+        ])
+        #expect(selected?.name == "en5")
+    }
 }

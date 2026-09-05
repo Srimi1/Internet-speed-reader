@@ -26,6 +26,11 @@ private struct GeneralSettings: View {
                 get: { coordinator.loginItem.state.isOn },
                 set: { _ in coordinator.toggleLoginItem() }
             ))
+            if let error = coordinator.loginItem.lastError {
+                Text("Launch at login: \(error)")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
             if coordinator.loginItem.state == .requiresApproval {
                 HStack {
                     Text("Approval is needed in System Settings")

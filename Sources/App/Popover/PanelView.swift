@@ -18,6 +18,7 @@ struct PanelView: View {
             liveSection
             gaugeSection
             resultTiles
+            testStatus
             serverRow
             Divider()
             tabs
@@ -47,6 +48,7 @@ struct PanelView: View {
             Menu {
                 Button("Check Connection Now") { coordinator.checkConnectionNow() }
                 Button("Apple Deep Test") { coordinator.startAppleDeepTest() }
+                    .disabled(!coordinator.canRunAppleTest)
                 Divider()
                 Button("Settings…") { coordinator.openSettings() }
                 Button("Quit Internet Speed Reader") { NSApp.terminate(nil) }
@@ -88,8 +90,8 @@ struct PanelView: View {
 
     private var liveSection: some View {
         HStack(spacing: 16) {
-            liveTile(arrow: "arrow.down", value: coordinator.downMbps, label: "Now")
-            liveTile(arrow: "arrow.up", value: coordinator.upMbps, label: "Now")
+            liveTile(arrow: "arrow.down", value: coordinator.downMbps, label: coordinator.liveReadingsAvailable ? "Live · Mbps" : "Unavailable")
+            liveTile(arrow: "arrow.up", value: coordinator.upMbps, label: coordinator.liveReadingsAvailable ? "Live · Mbps" : "Unavailable")
             Spacer()
             Sparkline(samples: coordinator.samples.elements.map(\.downMbps))
                 .frame(width: 96, height: 30)
@@ -100,7 +102,7 @@ struct PanelView: View {
         VStack(alignment: .leading, spacing: 1) {
             HStack(spacing: 3) {
                 Image(systemName: arrow).font(.caption2)
-                Text(SpeedCoreFormatter.panel(value))
+                Text(coordinator.liveReadingsAvailable ? SpeedCoreFormatter.panel(value) : "—")
                     .font(.system(size: 15, weight: .medium))
                     .monospacedDigit()
                     .contentTransition(.numericText())
@@ -118,7 +120,7 @@ struct PanelView: View {
                 mbps: gaugeValue,
                 isRunning: coordinator.speedTest.state.isRunning,
                 phaseLabel: phaseLabel,
-                canStart: coordinator.speedTest.canStart,
+                canStart: coordinator.canRunSpeedTest,
                 onStart: { coordinator.startSpeedTest() },
                 onStop: { coordinator.speedTest.cancel() }
             )
@@ -133,6 +135,7 @@ struct PanelView: View {
     }
 
     private var phaseLabel: String {
+        if coordinator.speedTest.state == .stopping { return "Stopping…" }
         switch coordinator.speedTest.phase {
         case .meta: return "Finding server"
         case .latency: return "Latency"
@@ -174,21 +177,58 @@ struct PanelView: View {
         .accessibilityElement(children: .combine)
     }
 
-    private var serverRow: some View {
-        HStack {
+    @ViewBuilder
+    private var testStatus: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            if case let .failed(message) = coordinator.speedTest.state {
+                Text(message)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let reason = coordinator.speedTest.startBlockedReason, !coordinator.speedTest.state.isRunning {
+                Text(reason).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if coordinator.path.status != .satisfied {
+                Text("Connect to a network to run a speed test.").foregroundStyle(.secondary)
+            }
             if let result = coordinator.speedTest.latestResult {
-                Text([result.ispName, result.clientLocation].compactMap { $0 }.joined(separator: " · "))
-                Spacer()
-                Text(result.serverName ?? "")
-            } else if case let .failed(message) = coordinator.speedTest.state {
-                Text(message).foregroundStyle(.red)
-            } else {
-                Text("Press GO to measure your connection")
+                let provider = result.engine == .cloudflare ? "Cloudflare" : "Apple"
+                Text("Last test · \(Self.shortDate(result.startedAt)) · \(provider)")
+                    .foregroundStyle(.secondary)
+                if result.methodologyVersion == nil {
+                    Text("Earlier measurement method")
+                        .foregroundStyle(.secondary)
+                } else if result.engine == .cloudflare {
+                    Text("Download: \(Self.qualityLabel(result.downloadQuality)) · Upload: \(Self.qualityLabel(result.uploadQuality))")
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .font(.caption2)
+    }
+
+    private static func qualityLabel(_ quality: String?) -> String {
+        switch quality {
+        case "good": return "validated"
+        case "shortSample": return "short sample"
+        case "dataLimited": return "data limit reached"
+        case "incomplete": return "limited · unfinished transfers excluded"
+        case "variable": return "variable"
+        default: return "quality unavailable"
+        }
+    }
+
+    private var serverRow: some View {
+        Group {
+            if let result = coordinator.speedTest.latestResult {
+                Text([result.ispName, result.serverName].compactMap { $0 }.joined(separator: " · "))
+            } else if !coordinator.speedTest.state.isRunning {
+                Text("Press GO to measure download and upload capacity")
             }
         }
         .font(.caption2)
         .foregroundStyle(.secondary)
-        .lineLimit(1)
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     // MARK: Tabs
@@ -219,18 +259,21 @@ struct PanelView: View {
             Text("No tests yet").font(.caption2).foregroundStyle(.secondary)
         } else {
             ForEach(coordinator.speedTest.history.prefix(20)) { result in
-                HStack {
-                    Text(Self.shortDate(result.startedAt))
-                        .frame(width: 84, alignment: .leading)
-                    Text("↓ \(SpeedCoreFormatter.panel(result.downloadMbps ?? 0))")
-                    Text("↑ \(SpeedCoreFormatter.panel(result.uploadMbps ?? 0))")
-                    Spacer()
-                    if result.engine == .appleNetworkQuality {
-                        Text("Apple").foregroundStyle(.tertiary)
+                VStack(alignment: .leading, spacing: 1) {
+                    HStack {
+                        Text(Self.shortDate(result.startedAt))
+                            .frame(width: 84, alignment: .leading)
+                        Text("↓ \(result.downloadMbps.map(SpeedCoreFormatter.panel) ?? "—")")
+                        Text("↑ \(result.uploadMbps.map(SpeedCoreFormatter.panel) ?? "—")")
+                        Spacer()
                     }
+                    let engine = result.engine == .appleNetworkQuality ? "Apple" : "Cloudflare"
+                    Text(result.methodologyVersion == nil ? "\(engine) · earlier measurement method" : engine)
+                        .foregroundStyle(.tertiary)
                 }
                 .font(.caption2)
                 .monospacedDigit()
+                .accessibilityElement(children: .combine)
             }
         }
     }
@@ -257,7 +300,7 @@ struct PanelView: View {
     }
 
     private var footer: some View {
-        Text("Menu bar shows live link throughput for all apps. Test results measure payload only, so they read a little lower.")
+        Text("The menu bar shows current traffic for all apps, including protocol overhead. GO measures capacity to the test server. Idle traffic can be zero.")
             .font(.system(size: 9))
             .foregroundStyle(.tertiary)
             .fixedSize(horizontal: false, vertical: true)

@@ -5,8 +5,9 @@ import Foundation
 /// Every field is optional on purpose: the JSON schema changes between the default
 /// parallel mode and sequential mode, where top-level `responsiveness` is replaced by
 /// `dl_responsiveness` and `ul_responsiveness`. The binary is also undocumented, so
-/// Apple can change keys in any point release; a missing field must degrade the
-/// display rather than fail the decode.
+/// Apple can change keys in any point release. Decoding tolerates missing fields;
+/// validation separately requires usable download and upload measurements before
+/// declaring a completed test.
 public struct NetworkQualityReport: Sendable, Codable {
     public var base_rtt: Double?
     public var dl_throughput: Double?
@@ -37,5 +38,43 @@ public struct NetworkQualityReport: Sendable, Codable {
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = .current
         return formatter.date(from: string)
+    }
+}
+
+struct NetworkQualityMeasurements: Sendable, Equatable {
+    let downloadMbps: Double
+    let uploadMbps: Double
+    let downloadBytes: UInt64
+    let uploadBytes: UInt64
+}
+
+extension NetworkQualityReport {
+    /// Optional diagnostics tolerate Apple's schema changes. A successful capacity
+    /// test still needs both positive, finite throughput measurements; `{}` is not one.
+    func validatedMeasurements() throws -> NetworkQualityMeasurements {
+        guard let download = downloadMbps, download.isFinite, download > 0,
+              let upload = uploadMbps, upload.isFinite, upload > 0 else {
+            throw SpeedTestError.engineFailure("Apple Deep Test did not return usable download and upload measurements.")
+        }
+        let downloadBytes = try Self.validatedBytes(dl_bytes_transferred)
+        let uploadBytes = try Self.validatedBytes(ul_bytes_transferred)
+        guard !downloadBytes.addingReportingOverflow(uploadBytes).overflow else {
+            throw SpeedTestError.engineFailure("Apple Deep Test returned an invalid byte count.")
+        }
+        return NetworkQualityMeasurements(
+            downloadMbps: download, uploadMbps: upload,
+            downloadBytes: downloadBytes, uploadBytes: uploadBytes
+        )
+    }
+
+    private static func validatedBytes(_ value: Double?) throws -> UInt64 {
+        guard let value else { return 0 }
+        // Double(UInt64.max) rounds up to 2^64. The strict comparison prevents UInt64
+        // conversion traps for that value, as well as negative or non-finite counts.
+        guard value.isFinite, value >= 0, value < Double(UInt64.max),
+              value.rounded(.towardZero) == value else {
+            throw SpeedTestError.engineFailure("Apple Deep Test returned an invalid byte count.")
+        }
+        return UInt64(value)
     }
 }

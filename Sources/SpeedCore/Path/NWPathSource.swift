@@ -17,7 +17,8 @@ public final class NWPathSource: PathSource {
             let counter = GenerationCounter()
 
             monitor.pathUpdateHandler = { path in
-                continuation.yield(Self.snapshot(from: path, generation: counter.next()))
+                guard let generation = counter.generationIfChanged(path) else { return }
+                continuation.yield(Self.snapshot(from: path, generation: generation))
             }
             continuation.onTermination = { _ in monitor.cancel() }
             monitor.start(queue: queue)
@@ -36,7 +37,8 @@ public final class NWPathSource: PathSource {
             PathSnapshot.Interface(
                 name: interface.name,
                 index: interface.index,
-                kind: kind(for: interface)
+                kind: kind(for: interface),
+                isUsedByPath: path.usesInterfaceType(interface.type)
             )
         }
 
@@ -80,10 +82,15 @@ public final class NWPathSource: PathSource {
 private final class GenerationCounter: @unchecked Sendable {
     private let lock = NSLock()
     private var value = 0
+    private var previous: NWPath?
 
-    func next() -> Int {
+    func generationIfChanged(_ path: NWPath) -> Int? {
         lock.lock()
         defer { lock.unlock() }
+        // Native path equality also detects route changes that retain the same en0
+        // interface. Deduplicate here so generation is a meaningful network identity.
+        guard previous != path else { return nil }
+        previous = path
         value += 1
         return value
     }

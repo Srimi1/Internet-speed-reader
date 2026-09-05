@@ -42,6 +42,10 @@ public struct SpeedTestResult: Sendable, Codable, Equatable, Identifiable {
     public var interfaceName: String?
     public var networkProtocol: String?
     public var quality: String?
+    /// Nil identifies results saved by the original measurement engine.
+    public var methodologyVersion: Int?
+    public var downloadQuality: String?
+    public var uploadQuality: String?
 
     /// Apple's numbers live here and never mix with the Cloudflare columns.
     public var apple: AppleExtras?
@@ -77,6 +81,9 @@ public struct SpeedTestResult: Sendable, Codable, Equatable, Identifiable {
         interfaceName: String? = nil,
         networkProtocol: String? = nil,
         quality: String? = nil,
+        methodologyVersion: Int? = nil,
+        downloadQuality: String? = nil,
+        uploadQuality: String? = nil,
         apple: AppleExtras? = nil
     ) {
         self.id = id
@@ -109,6 +116,9 @@ public struct SpeedTestResult: Sendable, Codable, Equatable, Identifiable {
         self.interfaceName = interfaceName
         self.networkProtocol = networkProtocol
         self.quality = quality
+        self.methodologyVersion = methodologyVersion
+        self.downloadQuality = downloadQuality
+        self.uploadQuality = uploadQuality
         self.apple = apple
     }
 

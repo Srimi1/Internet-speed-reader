@@ -1,90 +1,59 @@
 #!/usr/bin/env bash
-# Build a distributable disk image for Internet Speed Reader.
+# Build a universal, ad-hoc signed public image without a personal certificate.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DD="${DERIVED_DATA:-$HOME/Library/Developer/Xcode/DerivedData/InternetSpeedReader}"
 APP_NAME="InternetSpeedReader.app"
-VOLUME_NAME="Internet Speed Reader"
-IDENTITY="${CODESIGN_IDENTITY:--}"
-
 cd "$REPO"
 VERSION="$(awk -F'"' '/MARKETING_VERSION:/ {print $2; exit}' project.yml)"
-# Stage OUTSIDE iCloud Drive. Staging inside it makes the file provider tag every
-# file with its own extended attributes, which get baked into the image and then
-# break `codesign --verify` on the installed copy.
 STAGING="$(mktemp -d "${TMPDIR:-/tmp}/isr-dmg-XXXXXX")"
+trap 'rm -r -- "$STAGING"' EXIT
 OUTPUT="$REPO/dist/InternetSpeedReader-$VERSION.dmg"
 
-echo "==> Building Release $VERSION"
-"${XCODEGEN:-/opt/homebrew/bin/xcodegen}" generate --spec project.yml
+"${XCODEGEN:-xcodegen}" generate --spec project.yml
 xcodebuild -project InternetSpeedReader.xcodeproj \
   -scheme InternetSpeedReader -configuration Release \
-  -derivedDataPath "$DD" build
+  -derivedDataPath "$DD" ARCHS="arm64 x86_64" ONLY_ACTIVE_ARCH=NO \
+  CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= \
+  SWIFT_SERIALIZE_DEBUGGING_OPTIONS=NO build
 
 BUILT="$DD/Build/Products/Release/$APP_NAME"
-[ -d "$BUILT" ] || { echo "Build product missing at $BUILT" >&2; exit 1; }
-
-echo "==> Staging"
-rm -f "$OUTPUT"
+[ -d "$BUILT" ] || { echo "Release app is missing" >&2; exit 1; }
 mkdir -p "$REPO/dist"
 ditto --noextattr --noqtn "$BUILT" "$STAGING/$APP_NAME"
-# The Applications symlink is what makes the window a drag-to-install target.
 ln -s /Applications "$STAGING/Applications"
-
 cat > "$STAGING/READ ME FIRST.txt" <<'NOTE'
 Internet Speed Reader
 =====================
 
-To install, drag the app onto the Applications folder shown beside it.
+Drag the app to Applications. macOS 14 or later is required.
 
-FIRST LAUNCH
-------------
-This build is signed for development but is not notarised by Apple, so the first
-launch on another Mac is blocked with a message about an unidentified developer.
+This community build is ad-hoc signed. It has no personal signing certificate
+and is NOT Developer ID signed or notarized by Apple. Gatekeeper may block it.
+Do not disable system security protections. Review the source and build locally
+if you cannot open this build under your security policy.
 
-To open it:
-  1. Right-click (or Control-click) the app in Applications.
-  2. Choose Open, then Open again in the dialog.
+The menu bar shows current network traffic automatically while your Mac is awake.
+Download is the default; sustained upload activity switches to upload. Click the
+menu bar item for manual Go/Stop capacity tests and local history. A dash means
+there is no fresh measurement. Capacity tests transfer data to external servers.
 
-You only need to do this once. Alternatively, run this in Terminal:
-  xattr -dr com.apple.quarantine /Applications/InternetSpeedReader.app
+There are no API keys, user preferences, test history or private signing assets
+included in this image. See the repository's privacy and security documentation.
 
-WHAT IT DOES
-------------
-The app lives in the menu bar and shows live download and upload throughput with
-a coloured dot for connection status. It turns red the moment the internet drops
-and posts a notification, then tells you how long the outage lasted when it
-returns. Click it to run a speed test.
-
-Menu bar position is controlled by you: hold Command and drag the item to move it.
-
-Source and issues: https://github.com/Srimi1/Internet-speed-reader
+Source, build instructions and SHA-256 checksums:
+https://github.com/Srimi1/Internet-speed-reader
 NOTE
 
-# Strip anything that attached itself along the way; a stray Finder attribute is
-# enough to make the signature fail verification after install.
+# Staging outside cloud-synced folders avoids carrying file-provider metadata.
 xattr -cr "$STAGING/$APP_NAME"
-codesign --force --sign "$IDENTITY" --options runtime --timestamp=none "$STAGING/$APP_NAME"
-codesign --verify --strict "$STAGING/$APP_NAME"
-
-echo "==> Creating disk image"
-hdiutil create \
-  -volname "$VOLUME_NAME" \
-  -srcfolder "$STAGING" \
-  -ov -format UDZO \
-  -fs APFS \
-  "$OUTPUT"
-
-echo "==> Verifying"
+codesign --force --sign - --options runtime --timestamp=none "$STAGING/$APP_NAME"
+codesign --verify --deep --strict "$STAGING/$APP_NAME"
+hdiutil create -volname "Internet Speed Reader" -srcfolder "$STAGING" \
+  -ov -format UDZO -fs APFS "$OUTPUT"
 hdiutil verify "$OUTPUT"
-codesign --sign "$IDENTITY" "$OUTPUT" 2>/dev/null || echo "note: image signing skipped (identity unavailable)"
-
-SIZE="$(du -h "$OUTPUT" | cut -f1)"
-SHA="$(shasum -a 256 "$OUTPUT" | cut -d' ' -f1)"
-rm -rf "$STAGING"
-
-echo
-echo "Built $OUTPUT"
-echo "Size    $SIZE"
-echo "SHA-256 $SHA"
+codesign --sign - "$OUTPUT"
+codesign --verify "$OUTPUT"
+(cd "$REPO/dist" && shasum -a 256 "InternetSpeedReader-$VERSION.dmg" > SHA256SUMS)
+echo "Built public image and SHA256SUMS in dist/"

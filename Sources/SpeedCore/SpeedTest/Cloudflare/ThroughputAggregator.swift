@@ -2,28 +2,37 @@ import Foundation
 
 public struct ThroughputSlice: Sendable, Equatable {
     public let mbps: Double
+    /// End of the measured interval, relative to the phase start.
     public let secondsSincePhaseStart: Double
+    public let durationSeconds: Double
 
-    public init(mbps: Double, secondsSincePhaseStart: Double) {
+    public init(mbps: Double, secondsSincePhaseStart: Double, durationSeconds: Double = 0.1) {
         self.mbps = mbps
         self.secondsSincePhaseStart = secondsSincePhaseStart
+        self.durationSeconds = durationSeconds
     }
 }
 
 public struct ThroughputSummary: Sendable, Equatable {
-    /// The headline number, a trimmed mean of the steady-state slices.
+    /// Confirmed payload over the actual post-warm-up measurement time, including stalls.
     public let mbps: Double
-    /// Total bytes over total seconds; a useful cross-check that cannot be skewed by trimming.
     public let meanMbps: Double
-    /// 95th percentile slice.
     public let peakMbps: Double
     public let sliceCount: Int
     public let quality: Quality
 
     public enum Quality: String, Sendable, Equatable {
-        case good
-        /// Enough to report, but the phase was short enough that the number is rough.
-        case shortSample
+        case good, shortSample, dataLimited, variable, incomplete
+
+        var severity: Int {
+            switch self {
+            case .good: 0
+            case .variable: 1
+            case .shortSample: 2
+            case .dataLimited: 3
+            case .incomplete: 4
+            }
+        }
     }
 }
 
@@ -31,44 +40,62 @@ public enum ThroughputAggregationError: Error, Equatable, Sendable {
     case insufficientData(slices: Int)
 }
 
-/// Turns a timeline of 100 ms slices into one headline number.
 public struct ThroughputAggregator: Sendable {
-    /// TCP slow start plus the socket buffer filling means the first stretch of any
-    /// transfer is not representative. Discarding it is what makes the result comparable
-    /// to other speed tests rather than systematically low.
     public static let warmUpSeconds: Double = 1.5
-    public static let minimumSlices = 10
-    public static let shortSampleThreshold = 30
-    /// Drop the slowest 30 percent (ramp and stalls) and the fastest 10 percent
-    /// (callback coalescing can bunch bytes into one slice and overstate it).
-    public static let trimLowest = 0.30
-    public static let trimHighest = 0.10
+    public static let minimumMeasurementSeconds: Double = 1
+    public static let goodMeasurementSeconds: Double = 3
+    /// Variation is computed over one-second windows, not bursty delegate callbacks.
+    public static let variableCoefficient: Double = 0.25
 
     public init() {}
 
-    public func summarize(_ slices: [ThroughputSlice], totalBytes: UInt64, totalSeconds: Double) throws -> ThroughputSummary {
-        let steady = slices.filter { $0.secondsSincePhaseStart >= Self.warmUpSeconds }
-        let usable = steady.count >= Self.minimumSlices ? steady : Array(slices.dropFirst(3))
-
-        guard usable.count >= Self.minimumSlices else {
-            throw ThroughputAggregationError.insufficientData(slices: usable.count)
+    public func summarize(_ slices: [ThroughputSlice], totalBytes: UInt64, totalSeconds: Double,
+                          dataLimited: Bool = false, incomplete: Bool = false) throws -> ThroughputSummary {
+        let measured = slices.compactMap { slice -> (rate: Double, duration: Double, end: Double)? in
+            guard slice.mbps.isFinite, slice.mbps >= 0,
+                  slice.durationSeconds.isFinite, slice.durationSeconds > 0,
+                  slice.secondsSincePhaseStart.isFinite else { return nil }
+            let end = min(slice.secondsSincePhaseStart, totalSeconds)
+            let start = max(Self.warmUpSeconds, slice.secondsSincePhaseStart - slice.durationSeconds)
+            let duration = end - start
+            guard duration > 0 else { return nil }
+            return (slice.mbps, duration, end)
         }
+        let seconds = measured.reduce(0) { $0 + $1.duration }
+        let megabits = measured.reduce(0) { $0 + $1.rate * $1.duration }
+        guard totalSeconds.isFinite, totalSeconds > 0, totalBytes > 0,
+              seconds + 1e-9 >= Self.minimumMeasurementSeconds, megabits > 0 else {
+            throw ThroughputAggregationError.insufficientData(slices: measured.count)
+        }
+        let headline = megabits / seconds
+        let mean = Double(totalBytes) * 8 / 1e6 / totalSeconds
 
-        let sorted = usable.map(\.mbps).sorted()
-        let lowerBound = Int((Double(sorted.count) * Self.trimLowest).rounded(.down))
-        let upperBound = sorted.count - Int((Double(sorted.count) * Self.trimHighest).rounded(.down))
-        let trimmed = Array(sorted[lowerBound..<max(lowerBound + 1, upperBound)])
+        // Callback coalescing is not network variability. Aggregate consecutive seconds
+        // before estimating variation and peak; preserve zero-rate windows throughout.
+        var windows: [Int: (megabits: Double, seconds: Double)] = [:]
+        for sample in measured {
+            var start = sample.end - sample.duration
+            while start < sample.end - 1e-9 {
+                let index = Int(floor(start - Self.warmUpSeconds + 1e-9))
+                let end = min(sample.end, Self.warmUpSeconds + Double(index + 1))
+                let duration = end - start
+                let previous = windows[index] ?? (0, 0)
+                windows[index] = (previous.megabits + sample.rate * duration, previous.seconds + duration)
+                start = end
+            }
+        }
+        let rates = windows.values.filter { $0.seconds > 0 }.map { (rate: $0.megabits / $0.seconds, duration: $0.seconds) }
+        let variance = rates.reduce(0) { $0 + pow($1.rate - headline, 2) * $1.duration } / seconds
+        let quality: ThroughputSummary.Quality
+        if incomplete { quality = .incomplete }
+        else if dataLimited { quality = .dataLimited }
+        else if seconds < Self.goodMeasurementSeconds { quality = .shortSample }
+        else if sqrt(variance) / headline > Self.variableCoefficient { quality = .variable }
+        else { quality = .good }
 
-        let headline = trimmed.reduce(0, +) / Double(trimmed.count)
-        let mean = totalSeconds > 0 ? Double(totalBytes) * 8 / 1e6 / totalSeconds : 0
+        let sorted = rates.map(\.rate).sorted()
         let peak = sorted[min(sorted.count - 1, Int(Double(sorted.count) * 0.95))]
-
-        return ThroughputSummary(
-            mbps: headline,
-            meanMbps: mean,
-            peakMbps: peak,
-            sliceCount: usable.count,
-            quality: usable.count < Self.shortSampleThreshold ? .shortSample : .good
-        )
+        return ThroughputSummary(mbps: headline, meanMbps: mean, peakMbps: peak,
+                                 sliceCount: measured.count, quality: quality)
     }
 }

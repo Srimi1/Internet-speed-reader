@@ -35,7 +35,8 @@ public enum RouteMessageParser {
                 if wantIndex == nil || wantIndex == index {
                     result[index] = IFCounters(
                         rx: header2.ifm_data.ifi_ibytes,
-                        tx: header2.ifm_data.ifi_obytes
+                        tx: header2.ifm_data.ifi_obytes,
+                        txPackets: header2.ifm_data.ifi_opackets
                     )
                 }
             }
@@ -50,7 +51,7 @@ public enum RouteMessageParser {
     public static func name(forIndex index: Int) -> String? {
         var buffer = [CChar](repeating: 0, count: Int(IFNAMSIZ))
         guard if_indextoname(UInt32(index), &buffer) != nil else { return nil }
-        return String(cString: buffer)
+        return String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
     }
 
     public static func index(forName name: String) -> Int? {

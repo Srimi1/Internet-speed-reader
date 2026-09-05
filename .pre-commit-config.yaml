@@ -1,0 +1,9 @@
+repos:
+  - repo: local
+    hooks:
+      - id: public-repository-security
+        name: Check staged files for secrets and private machine data
+        entry: python3 scripts/security-check.py --staged
+        language: system
+        pass_filenames: false
+        always_run: true

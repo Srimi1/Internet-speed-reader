@@ -42,6 +42,21 @@ private extension Array where Element == ConnectivityStateMachine.Effect {
 
 @Suite("Connectivity state machine")
 struct ConnectivityStateMachineTests {
+    @Test("Sleep during a test wins over delayed test cleanup")
+    func sleepDuringTest() {
+        var driver = Driver()
+        driver.succeed()
+        driver.send(.speedTestStarted)
+        driver.send(.willSleep)
+        #expect(driver.machine.state == .suspended(reason: .sleep))
+        #expect(driver.send(.speedTestFinished(success: false)).isEmpty)
+        #expect(driver.machine.state == .suspended(reason: .sleep))
+        driver.advance(10)
+        let effects = driver.send(.didWake)
+        #expect(!effects.isEmpty)
+        #expect(driver.machine.state != .suspended(reason: .sleep))
+    }
+
     @Test("One failure is not an outage; the second confirms it")
     func twoFailuresConfirm() {
         var driver = Driver()

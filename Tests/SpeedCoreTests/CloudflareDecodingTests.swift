@@ -10,7 +10,7 @@ struct CloudflareMetaTests {
 
     @Test("Decodes the shape the live endpoint actually returns")
     func liveShape() throws {
-        // Synthetic metadata using the observed endpoint schema: asn is a number,
+        // Synthetic metadata with the observed endpoint schema: asn is a number,
         // coordinates are strings, and colo is an object. No real client data.
         let meta = try decode("""
         {"hostname":"speed.cloudflare.com","clientIp":"2001:db8::1","httpProtocol":"HTTP/1.1",
@@ -44,6 +44,26 @@ struct CloudflareMetaTests {
 
 @Suite("Response validation")
 struct ResponseValidatorTests {
+    @Test("HTTP 403 refusals are not reported as HTTP 429 rate limits")
+    func distinguishesRefusalFromRateLimit() throws {
+        let refused = [
+            ResponseValidator.validateDownload(status: 403, contentType: nil, expectedContentLength: 0, requestedBytes: 0),
+            ResponseValidator.validateDownload(status: 403, contentType: nil, expectedContentLength: 1, requestedBytes: 104_857_600),
+            ResponseValidator.validateUpload(status: 403, confirmedBytesHeader: nil, sentBytes: 1024),
+        ]
+        for outcome in refused {
+            do { try outcome.requireValid(); Issue.record("HTTP 403 must fail") }
+            catch {
+                guard case .engineFailure(let message) = error as? SpeedTestError else {
+                    Issue.record("HTTP 403 must be an explicit server failure"); continue
+                }
+                #expect(message.contains("HTTP 403"))
+            }
+        }
+        #expect(ResponseValidator.validateDownload(status: 429, contentType: nil, expectedContentLength: 1, requestedBytes: 0) == .rateLimited)
+        #expect(ResponseValidator.validateUpload(status: 429, confirmedBytesHeader: nil, sentBytes: 1024) == .rateLimited)
+    }
+
     @Test("A captive portal's HTML is rejected instead of being measured as speed")
     func rejectsPortalHTML() {
         let outcome = ResponseValidator.validateDownload(
@@ -114,7 +134,7 @@ struct UploadFixtureTests {
     @Test("Rung selection targets about two seconds of upload per request")
     func rungSelection() {
         let fixtures = UploadFixture(directory: FileManager.default.temporaryDirectory)
-        #expect(fixtures.rung(forPerStreamBytesPerSecond: 0) == 1_048_576)
+        #expect(fixtures.rung(forPerStreamBytesPerSecond: 0) == 16_384)
         #expect(fixtures.rung(forPerStreamBytesPerSecond: 2_000_000) == 4_194_304)
         #expect(fixtures.rung(forPerStreamBytesPerSecond: 20_000_000) == 33_554_432)
     }

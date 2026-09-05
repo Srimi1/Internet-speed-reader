@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 import ServiceManagement
 import SpeedCore
 
@@ -8,6 +9,7 @@ import SpeedCore
 /// path, so registration only makes sense from /Applications. If the app is later moved
 /// or deleted, status flips to .notFound and the toggle silently stops working.
 @MainActor
+@Observable
 final class LoginItemManager {
     enum State: Equatable {
         case enabled

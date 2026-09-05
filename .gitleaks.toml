@@ -1,0 +1,7 @@
+title = "Internet Speed Reader secret scanning"
+
+[extend]
+useDefault = true
+
+# Keep the upstream provider rules, entropy checks and private-key detection.
+# Do not add blanket path/commit allowlists or a baseline of unresolved secrets.

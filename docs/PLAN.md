@@ -1,7 +1,6 @@
 # Implementation plan and status
 
-> Privacy note: personal signing, local paths and network metadata in this archived
-> document were generalized. Example values are not captured personal data.
+**2026-09-05 update:** This historical plan retains its original HTTP 403 assumptions. Current v1.1 received HTTP 403 for a 16 MiB download, whose cause remains unknown; the 50 MiB ceiling is a conservative client choice, not a published endpoint limit. Only HTTP 429 triggers the 15-minute backoff. HTTP 403 is an explicit refusal, without a halving retry. See [current verification](VERIFICATION-1.1.md).
 
 This file is the historical record of how Internet Speed Reader v1.0.0 was planned and what actually shipped. It has three parts: a status section that maps each milestone to the commit that delivered it, a list of every place the shipped code differs from the plan, and the approved plan itself, reproduced in full.
 
@@ -34,7 +33,7 @@ Full commit list on `main`, oldest first: `2d96b2b` Initial commit, `7aa518a` M0
 | Merge | PR #1 into `main`, merge commit `d0ee6db` |
 | Artifact | `InternetSpeedReader-1.0.0.dmg`, 1.5 MB (1,564,806 bytes), attached to the GitHub release |
 | SHA-256 | `4b11408d3d5d5c8e9d99d45311e8f3eb874048346fe0228d3e9609e353282f46` |
-| Signing | `-`, team `LOCAL_TEAM_ID`, hardened runtime on, not notarised |
+| Signing | Local development certificate; personal identity omitted. Public builds must use local overrides or ad-hoc signing. |
 | Unit tests | 75 tests in 16 suites, no network, no test host |
 
 ### Verification evidence recorded on 2026-09-04
@@ -49,7 +48,7 @@ These are the measurements taken during the build. They are the only numbers thi
 | M3: interface selection | `NWPath` returned `en0` twice, once per address family, which is what `ActiveInterfaceSelector` dedupes. A real VPN was not exercised; no fact was recorded. |
 | M4: prober timing | Healthy: 216 ms cold, then 46 to 49 ms warm. Blackholed `192.0.2.1`: fails through the deadline at 3003 to 3006 ms against a 3000 ms round budget. |
 | M7: ping accuracy | Over 20 samples: raw HTTP median 77.2 ms, minus `Server-Timing` 52.4 ms, `cfL4` `min_rtt` median 46.1 ms, ICMP ping 20 ms, `curl` TCP connect 34 ms. HTTP minus server time tracks the server's TCP RTT within about 6 ms and is the method speed.cloudflare.com itself uses. ICMP reads lower because it takes a different anycast path. |
-| M8: throughput | Live run: 176.3 Mbps download (mean 158.7, peak 292.1, 6 streams, 2048 KiB chunks, 205.5 MB), 137.9 Mbps upload (4 streams, 122.7 MB, all server-confirmed via `cf-meta-upload-bytes`), ping 82.8 ms, jitter 15.6 ms, `cfL4` min RTT 32.1 ms, ISP "Example ISP", client Example City, colo Kolkata (CCU), protocol `http/1.1`, wall time 23.6 s. Single 25 MiB stream 120 Mbps; four parallel streams about 160 Mbps summed. |
+| M8: throughput | A historical end-to-end run completed with server-confirmed upload bytes. Its network identity and personal connection measurements are excluded from public documentation. |
 | M11: DMG | Staging inside iCloud Drive baked `com.apple.fileprovider.fpfs#P` and `com.apple.FinderInfo` attributes into the image and `codesign` rejected the installed app. Fixed in `scripts/make-dmg.sh` by staging in `mktemp` outside iCloud, `ditto --noextattr`, `xattr -cr` and re-signing. |
 | Not recorded | The overnight soak, the VPN test, the captive-portal test, the `/etc/hosts` blackhole test and a screenshot of the status item (Chrome fullscreen hid the menu bar). |
 
@@ -62,7 +61,7 @@ Each of these was forced by something found while testing against an independent
 | Area | Plan said | Code does | Why |
 |---|---|---|---|
 | Download byte counting | A per-task `DownloadStreamDelegate` passed to `URLSession.data(for:delegate:)`. | `Sources/SpeedCore/SpeedTest/Cloudflare/DownloadStream.swift` owns its own `URLSession` and is that session's `URLSessionDataDelegate`. Bytes are counted in `urlSession(_:dataTask:didReceive:)`. | The async `data(for:delegate:)` API never calls `didReceive data` on a task-scoped delegate. The first live run reported a correct upload and a download of 0.0 Mbps. Only `UploadStreamDelegate` in `StreamDelegates.swift` remains task-scoped, because `didSendBodyData` does fire there. |
-| Team ID | `DEVELOPMENT_TEAM: LOCAL_CERT_ID`. | `project.yml` sets `DEVELOPMENT_TEAM: LOCAL_TEAM_ID`. | `LOCAL_CERT_ID` is the suffix in the certificate's common name. The team ID is the certificate's OU, `LOCAL_TEAM_ID`. The plan and the research had confused the two. |
+| Team ID | Certificate CN suffix was incorrectly assumed to be the team. | Use certificate OU in a local override. | Do not commit personal signing identifiers. |
 | Static library header phase | Not mentioned. | `project.yml` gives `SpeedCore` `SWIFT_INSTALL_OBJC_HEADER: NO` and an empty `SWIFT_OBJC_INTERFACE_HEADER_NAME`. `ENABLE_USER_SCRIPT_SANDBOXING` stays `YES`. | User script sandboxing blocked the static library's Objective-C header copy phase. The library has no Objective-C consumers, so the header is not generated. |
 | Menu bar layout | Two right-aligned rows (down over up) in a 9 point font as the default, with one-line and dot-only alternatives. | `BarLayout` in `Sources/App/StatusBar/StatusItemView.swift` has four cases: `adaptive` (default), `twoLine`, `oneLine`, `dotOnly`. Adaptive draws one 11 point number with an arrow. The direction comes from `Sources/SpeedCore/Counters/ActiveDirectionSelector.swift`: download by default, upload only when upload exceeds 1.3 times download, with a 0.15 Mbps floor and a 3 second dwell. | User decision after seeing the two-line readout. The two-line layout is still selectable. |
 | Launch at login | A toggle that registers only from `/Applications`. | `AppSettings.launchAtLoginWanted` defaults to `true`. `AppCoordinator.reconcileLaunchAtLogin()` runs on every launch from `/Applications` and re-registers or unregisters `SMAppService.mainApp` to match the preference. `AppDelegate` also accepts `--login-status`, `--register-login-item` and `--unregister-login-item` flags, which `scripts/uninstall.sh` uses. | User wanted it on by default. Registering once was not enough: after a reinstall the background task database records the replaced bundle and `status` reads `.notFound`, so the app silently stopped launching at login. Verified enabled across two reinstalls after the fix. |
@@ -122,7 +121,7 @@ The plan below is reproduced from `the original local plan` as approved before t
 - You want an Ookla-style internet speed reader that lives in the top-right menu bar of your Mac, runs locally, and above all tells you the moment your internet drops and the moment it comes back. Today you find out by accident.
 - Your attached image did not reach me. Working from your answers instead: menu bar top-right; bar shows live ↓/↑ throughput; engine is built-in zero-install; alerts are a notification banner plus a red menu bar plus an outage log.
 - Work happens in `https://github.com/Srimi1/Internet-speed-reader.git` (Apache-2.0, currently LICENSE + README only). The local folder is empty and sits inside iCloud Drive, so step one is a clone into it.
-- Host verified today: macOS 26.6.2 Tahoe, Apple Silicon, Xcode 26.6, Swift 6.3.3, SDK 26.5, XcodeGen 2.45.4 at `/opt/homebrew/bin/xcodegen`. `security find-identity -v -p codesigning` returns exactly one identity, `-`, and no Developer ID. `swiftc -help-hidden` confirms `-default-isolation MainActor|nonisolated`.
+- Original development environment: Apple silicon, macOS and the Xcode 26 / Swift 6 toolchain. Personal host and signing details are excluded. Public source must build with contributor-supplied local signing overrides or ad-hoc signing.
 - Cloudflare endpoints verified live today: `/meta` needs a `Referer` header or returns 403 `{}`; `__down?bytes=N` caps at 52428800 and 403s above it; `__up` ignores `bytes=` and needs a real body; the host negotiates HTTP/1.1 only. Measured 120 Mbps single stream, ~160 Mbps across four.
 - This is version 1.0.0 of the app, and the last step ships a distributable `InternetSpeedReader-1.0.0.dmg`. `hdiutil` is present; `create-dmg` is not installed and is not needed.
 - Deployment target macOS 14.0, App Sandbox off, no entitlements file, v1 has no scheduled tests, no global hotkey, no auto-updater, no notarization.
@@ -130,7 +129,7 @@ The plan below is reproduced from `the original local plan` as approved before t
 ### Decisions (locked)
 - Two targets: `SpeedCore` (static library, `SWIFT_DEFAULT_ACTOR_ISOLATION: nonisolated`) holds all measurement and state logic; `InternetSpeedReader` (app, `MainActor`) holds AppKit and SwiftUI. The test bundle depends on `SpeedCore` only, with no TEST_HOST, so `xcodebuild test` never launches the agent app.
 - AppKit `NSStatusItem` with a custom `NSView`, not SwiftUI `MenuBarExtra`. Verified against the SDK: the `MenuBarExtra` label is limited to `Text` or `Label<Text, Image>`, there is no way to dismiss its window programmatically, and it offers no right-click. macOS 26 adds nothing to it.
-- Sign with the existing `Apple Development` identity, `CODE_SIGN_STYLE: Manual`, `DEVELOPMENT_TEAM: LOCAL_CERT_ID`, no provisioning profile. A team-anchored designated requirement survives rebuilds, so the notification grant and the login item registration persist. Ad-hoc `-` is the documented fallback with hardened runtime off.
+- Sign with the existing `Apple Development` identity, `CODE_SIGN_STYLE: Manual`, a locally supplied team ID, no provisioning profile. A team-anchored designated requirement survives rebuilds, so the notification grant and the login item registration persist. Ad-hoc `-` is the documented fallback with hardened runtime off.
 - Cloudflare engine uses N independent `URLSession`s each with `httpMaximumConnectionsPerHost = 1`, so N streams are N TCP connections by construction and a future switch to HTTP/2 cannot silently collapse them.
 - Request sizing is per-stream and never divided by N: `size = clamp(pow2Ceil(perStreamBytesPerSec * 2.0), 256 KiB, 50 MiB)`, re-derived every request.
 - Upload bodies are file-backed via `uploadTask(with:fromFile:)` against pre-generated fixtures of 1, 4, 16 and 32 MiB in Caches. No custom `InputStream` subclass anywhere in v1.
@@ -229,10 +228,10 @@ Sources/SpeedCore/…  Sources/App/…  Tests/SpeedCoreTests/…
 
 ### Build, sign, install
 - `project.yml` declares `SpeedCore` as a static library with nonisolated default isolation, the app with main-actor default isolation, and the test bundle depending on `SpeedCore` only so there is no test host. Info.plist lives outside every sources root.
-- Base settings: Swift 6 language mode, deployment target 14.0, marketing version 1.0.0, manual signing with the Apple Development identity and team LOCAL_CERT_ID, hardened runtime on, no entitlements block at all.
+- Base settings: Swift 6 language mode, deployment target 14.0, marketing version 1.0.0, manual signing with the Apple Development identity and a locally supplied team ID, hardened runtime on, no entitlements block at all.
 - Info.plist carries `LSUIElement`, `LSAppNapIsDisabled`, the minimum system version, the utilities category, and an App Transport Security exception for `captive.apple.com`, without which the plain-HTTP captive probe fails every time.
 ```bash
-set -euo pipefail; REPO="<repository>"; DD="$HOME/Library/Developer/Xcode/DerivedData/InternetSpeedReader"; cd "$REPO" && /opt/homebrew/bin/xcodegen generate --spec project.yml && xcodebuild -project InternetSpeedReader.xcodeproj -scheme InternetSpeedReader -configuration Release -derivedDataPath "$DD" build && osascript -e 'tell application "InternetSpeedReader" to quit' 2>/dev/null; rm -rf /Applications/InternetSpeedReader.app && ditto "$DD/Build/Products/Release/InternetSpeedReader.app" /Applications/InternetSpeedReader.app && codesign --verify --strict /Applications/InternetSpeedReader.app && open /Applications/InternetSpeedReader.app
+./scripts/install.sh
 ```
 - DerivedData stays outside iCloud Drive. The generated Xcode project is git-ignored and regenerated. Paths are quoted everywhere because the repo path contains spaces.
 - M0 must confirm the build log actually contains `-default-isolation=MainActor`, since Xcode silently ignores unknown build settings.
@@ -244,7 +243,7 @@ set -euo pipefail; REPO="<repository>"; DD="$HOME/Library/Developer/Xcode/Derive
 - Staging: copy the built app with `ditto` into a clean `build/dmg` folder, add `ln -s /Applications "build/dmg/Applications"` so the drag-to-install layout works, and include a short `README.txt` covering the first-launch Gatekeeper step.
 - Image: `hdiutil create -volname "Internet Speed Reader" -srcfolder build/dmg -ov -format UDZO -fs HFS+ dist/InternetSpeedReader-1.0.0.dmg`, then `hdiutil verify` it and print the SHA-256 for the release notes.
 - Optional window layout: build a read-write UDRW image first, mount it, position the icons and set the background with `osascript` against Finder, detach, then `hdiutil convert -format UDZO`. This is cosmetic and can be skipped if it proves flaky.
-- Sign the disk image itself with the same identity so its contents are not tampered with in transit: `codesign --sign "-" dist/InternetSpeedReader-1.0.0.dmg`.
+- Sign the disk image itself with the same identity so its contents are not tampered with in transit: `codesign --sign "$CODE_SIGN_IDENTITY" dist/InternetSpeedReader-1.0.0.dmg`.
 - Honest limitation: this build is signed for development and is not notarized, so on any other Mac Gatekeeper will refuse the first launch. The DMG README and the GitHub release notes must state the workaround, which is opening the app from the right-click menu once, or running `xattr -dr com.apple.quarantine /Applications/InternetSpeedReader.app`. Removing that friction needs a paid Developer ID certificate and notarization, which is out of scope for v1.
 - The `dist/` folder is git-ignored; the DMG is attached to a GitHub release rather than committed.
 

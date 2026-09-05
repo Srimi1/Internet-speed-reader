@@ -15,24 +15,20 @@ final class AppSettings {
         case launchAtLoginWanted
     }
 
-    enum RefreshPolicy: String, CaseIterable {
-        case always, reduceOnBattery, onlyWhenOpen
-
-        var title: String {
-            switch self {
-            case .always: return "Always 1 second"
-            case .reduceOnBattery: return "Reduce on battery"
-            case .onlyWhenOpen: return "Only while the panel is open"
-            }
-        }
-    }
+    typealias RefreshPolicy = LiveRefreshPolicy
 
     private let defaults: UserDefaults
 
     var barLayout: BarLayout { didSet { set(barLayout.rawValue, .barLayout) } }
     var unit: SpeedUnit { didSet { set(unit.rawValue, .unit) } }
     var showUnits: Bool { didSet { set(showUnits, .showUnits) } }
-    var refreshPolicy: RefreshPolicy { didSet { set(refreshPolicy.rawValue, .refreshPolicy) } }
+    @ObservationIgnored var onRefreshPolicyChange: (() -> Void)?
+    var refreshPolicy: RefreshPolicy {
+        didSet {
+            set(refreshPolicy.rawValue, .refreshPolicy)
+            onRefreshPolicyChange?()
+        }
+    }
 
     var notifyOnDrop: Bool { didSet { set(notifyOnDrop, .notifyOnDrop) } }
     var notifyOnRestore: Bool { didSet { set(notifyOnRestore, .notifyOnRestore) } }
@@ -56,7 +52,7 @@ final class AppSettings {
         barLayout = BarLayout(rawValue: defaults.string(forKey: Key.barLayout.rawValue) ?? "") ?? .adaptive
         unit = SpeedUnit(rawValue: defaults.string(forKey: Key.unit.rawValue) ?? "") ?? .megabitsPerSecond
         showUnits = defaults.object(forKey: Key.showUnits.rawValue) as? Bool ?? false
-        refreshPolicy = RefreshPolicy(rawValue: defaults.string(forKey: Key.refreshPolicy.rawValue) ?? "") ?? .reduceOnBattery
+        refreshPolicy = RefreshPolicy(storedValue: defaults.string(forKey: Key.refreshPolicy.rawValue))
         notifyOnDrop = defaults.object(forKey: Key.notifyOnDrop.rawValue) as? Bool ?? true
         notifyOnRestore = defaults.object(forKey: Key.notifyOnRestore.rawValue) as? Bool ?? true
         notifyAfterSeconds = defaults.object(forKey: Key.notifyAfterSeconds.rawValue) as? Double ?? 10
@@ -69,6 +65,7 @@ final class AppSettings {
         appleMaxSeconds = defaults.object(forKey: Key.appleMaxSeconds.rawValue) as? Int ?? 15
         reopenPanelOnFinish = defaults.object(forKey: Key.reopenPanelOnFinish.rawValue) as? Bool ?? true
         launchAtLoginWanted = defaults.object(forKey: Key.launchAtLoginWanted.rawValue) as? Bool ?? true
+        defaults.set(refreshPolicy.rawValue, forKey: Key.refreshPolicy.rawValue)
     }
 
     private func set(_ value: Any, _ key: Key) {

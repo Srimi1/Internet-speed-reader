@@ -13,6 +13,15 @@ final class AppCoordinator {
     var activeDirection: TrafficDirection = .download
     var activeInterface: PathSnapshot.Interface?
     var path: PathSnapshot = .unknown
+    var liveReadingsAvailable = false
+    var liveStatusText = "Waiting for a reading"
+    private var lastSampleAt: ContinuousClock.Instant?
+    private var currentInterval: Double = 1
+    private var isSleeping = false
+    private var measuringCapacity = false
+    private var hasStarted = false
+    private var isShuttingDown = false
+    private var preparedForTermination = false
 
     // Connectivity
     var connectionState: ConnectionDisplayState = .unknown
@@ -34,16 +43,18 @@ final class AppCoordinator {
     private var outageEngine: OutageEngine?
     private var tasks: [Task<Void, Never>] = []
     private var activity: NSObjectProtocol?
+    private var workspaceObservers: [NSObjectProtocol] = []
+    private var powerObserver: PowerPolicyObserver?
+    @ObservationIgnored private var settingsWindowController: SettingsWindowController?
 
-    /// Smoothing for the bar so it reads as a trend rather than flickering every tick.
-    private var smoothedDown: Double = 0
-    private var smoothedUp: Double = 0
-    private static let smoothing = 0.5
+    private var smoother = ThroughputSmoother()
     private var directionSelector = ActiveDirectionSelector()
 
     init() {}
 
     func start() {
+        guard !hasStarted else { return }
+        hasStarted = true
         notifications.bootstrap()
         loginItem.refresh()
         reconcileLaunchAtLogin()
@@ -61,10 +72,28 @@ final class AppCoordinator {
         startOutageEngine()
         startPathObservation()
         startLiveMeter()
+        settings.onRefreshPolicyChange = { [weak self] in self?.updatePowerPolicy() }
+        powerObserver = PowerPolicyObserver { [weak self] in self?.updatePowerPolicy() }
+        powerObserver?.start()
+    }
+
+    func prepareForTermination() async {
+        isShuttingDown = true
+        await speedTest.cancelAndWait()
+        await monitor.stop()
+        await outageEngine?.shutdown()
+        preparedForTermination = true
     }
 
     func shutdown() {
-        if let engine = outageEngine {
+        speedTest.cancel()
+        powerObserver?.stop()
+        powerObserver = nil
+        workspaceObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
+        workspaceObservers.removeAll()
+        settings.onRefreshPolicyChange = nil
+        Task { await monitor.stop() }
+        if !preparedForTermination, let engine = outageEngine {
             // Synchronously give the engine a chance to close an open outage as a clean
             // quit, so it is not later mistaken for a crash.
             let semaphore = DispatchSemaphore(value: 0)
@@ -80,26 +109,50 @@ final class AppCoordinator {
     // MARK: - Speed test
 
     private func wireSpeedTest() {
-        speedTest.onStateChange = { [weak self] running in
+        speedTest.onRunEvent = { [weak self] event in
             guard let self else { return }
-            // Suspend outage detection during a test: our own traffic saturating the link
-            // must never be mistaken for a connectivity problem.
-            self.connectionState = running ? .testing : self.connectionState
-            guard let engine = self.outageEngine else { return }
-            Task {
-                if running { await engine.speedTestStarted() }
-                else { await engine.speedTestFinished(success: true) }
+            switch event {
+            case .started:
+                guard !self.isSleeping else { return }
+                self.measuringCapacity = true
+                self.connectionState = .testing
+                await self.monitor.setDuringTest(true)
+                await self.outageEngine?.speedTestStarted()
+            case .finished:
+                self.measuringCapacity = false
+                self.connectionState = .unknown
+                await self.monitor.setDuringTest(false)
+                guard !self.isShuttingDown else { return }
+                if self.isSleeping {
+                    await self.outageEngine?.willSleep()
+                } else {
+                    // A completed throughput test is not a connectivity probe; failures
+                    // and cancellations especially must not manufacture an online event.
+                    await self.outageEngine?.speedTestFinished(success: false)
+                    await self.outageEngine?.pathChanged(self.path)
+                    // The engine schedules its own uncancelled probe. Running a probe
+                    // inline here would inherit a stopped test's cancellation.
+                }
             }
-            Task { await self.monitor.setDuringTest(running) }
         }
     }
 
+    var canRunSpeedTest: Bool {
+        path.status == .satisfied && !isSleeping && !isShuttingDown && connectionState != .captivePortal && speedTest.canStart
+    }
+
+    var canRunAppleTest: Bool {
+        path.status == .satisfied && !isSleeping && !isShuttingDown && connectionState != .captivePortal && speedTest.canStartApple
+    }
+
     func startSpeedTest() {
+        guard canRunSpeedTest else { return }
         speedTest.start(interfaceName: activeInterface?.name, options: settings.speedTestOptions)
     }
 
     func startAppleDeepTest() {
-        speedTest.startAppleDeepTest(interfaceName: activeInterface?.name)
+        guard canRunAppleTest else { return }
+        speedTest.startAppleDeepTest(interfaceName: activeInterface?.name, maxSeconds: settings.appleMaxSeconds)
     }
 
     func clearOutages() {
@@ -137,10 +190,11 @@ final class AppCoordinator {
     }
 
     func openSettings() {
-        NSApp.activate()
-        if #available(macOS 14.0, *) {
-            NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+        loginItem.refresh()
+        if settingsWindowController == nil {
+            settingsWindowController = SettingsWindowController(coordinator: self)
         }
+        settingsWindowController?.show()
     }
 
     func showAbout() {
@@ -181,7 +235,7 @@ final class AppCoordinator {
     private func handle(_ event: OutageEvent, engine: OutageEngine) async {
         switch event {
         case let .stateChanged(state):
-            connectionState = Self.display(for: state)
+            connectionState = measuringCapacity && !isSleeping ? .testing : Self.display(for: state)
             currentOutageStart = (state == .down || state == .captivePortal) ? currentOutageStart : nil
 
         case let .notifyDown(record):
@@ -247,30 +301,76 @@ final class AppCoordinator {
 
     private func startLiveMeter() {
         let monitor = self.monitor
-        let stream = Task { await monitor.samples() }
-
+        currentInterval = PowerPolicy.currentInterval(policy: settings.refreshPolicy)
         tasks.append(Task { [weak self] in
-            let samples = await stream.value
-            await monitor.setCadence(PowerPolicy.currentCadence())
+            guard let self else { return }
+            let updates = await monitor.updates()
+            await monitor.setCadence(.seconds(self.currentInterval))
             await monitor.start()
-            for await sample in samples {
-                guard let self else { return }
-                self.ingest(sample)
+            for await update in updates {
+                switch update {
+                case let .sample(sample):
+                    guard !self.isSleeping, sample.interfaceName == self.activeInterface?.name else { continue }
+                    self.ingest(sample)
+                case let .unavailable(reason):
+                    self.resetLiveDisplay(message: reason == .paused
+                        ? "Paused while the Mac sleeps" : "Waiting for a fresh reading")
+                    if reason == .stale, !self.isSleeping, !self.isShuttingDown { await monitor.start() }
+                }
             }
         })
     }
 
     private func ingest(_ sample: ThroughputSample) {
-        smoothedDown = smoothedDown * (1 - Self.smoothing) + sample.downMbps * Self.smoothing
-        smoothedUp = smoothedUp * (1 - Self.smoothing) + sample.upMbps * Self.smoothing
-        downMbps = smoothedDown
-        upMbps = smoothedUp
-        samples.append(sample)
-        // Raw sample, not the smoothed value: the selector has its own dwell logic and
-        // should see the transfer the moment it starts.
-        activeDirection = directionSelector.update(
-            downMbps: sample.downMbps, upMbps: sample.upMbps, now: sample.at
+        let smoothed = smoother.update(
+            downMbps: sample.downMbps, upMbps: sample.upMbps, elapsedSeconds: sample.elapsedSeconds
         )
+        downMbps = smoothed.downMbps
+        upMbps = smoothed.upMbps
+        samples.append(sample)
+        lastSampleAt = sample.at
+        liveReadingsAvailable = true
+        liveStatusText = "Live traffic · all apps"
+        let previousDirection = activeDirection
+        activeDirection = directionSelector.update(
+            downMbps: sample.downMbps, upMbps: sample.upMbps,
+            uploadActivityMbps: sample.uploadActivityMbps, now: sample.at
+        )
+        if activeDirection != previousDirection {
+            Log.live.debug("menu bar direction changed to \(self.activeDirection.rawValue, privacy: .public)")
+        }
+        Log.live.debug("sample on \(sample.interfaceName, privacy: .public): down=\(sample.downMbps) up=\(sample.upMbps) activity=\(sample.uploadActivityMbps) elapsed=\(sample.elapsedSeconds)")
+    }
+
+    private func resetLiveDisplay(message: String) {
+        Log.live.debug("live reading unavailable: \(message, privacy: .public)")
+        smoother.reset()
+        directionSelector.reset()
+        downMbps = 0
+        upMbps = 0
+        activeDirection = .download
+        liveReadingsAvailable = false
+        lastSampleAt = nil
+        liveStatusText = message
+        samples = RingBuffer<ThroughputSample>(capacity: 120)
+    }
+
+    /// The menu bar owns a refresh loop even while its panel is closed.
+    func refreshTimeSensitiveState() {
+        speedTest.refreshTime()
+        if let lastSampleAt, time.now().seconds(since: lastSampleAt) > ThroughputCalculator.maximumGapSeconds(expectedIntervalSeconds: currentInterval) {
+            resetLiveDisplay(message: "Reading unavailable · reconnecting")
+            Task { await monitor.resetBaseline() }
+        }
+        if let until = alertsPausedUntil, until <= time.wallClock() { pauseAlerts(until: nil) }
+    }
+
+    private func updatePowerPolicy() {
+        let interval = PowerPolicy.currentInterval(policy: settings.refreshPolicy)
+        guard interval != currentInterval else { return }
+        currentInterval = interval
+        resetLiveDisplay(message: "Updating refresh interval")
+        Task { await monitor.setCadence(.seconds(interval)) }
     }
 
     /// Makes the system registration match what the user wants, every launch.
@@ -300,57 +400,70 @@ final class AppCoordinator {
         tasks.append(Task { [weak self] in
             guard let self else { return }
             for await snapshot in self.pathSource.snapshots() {
-                self.apply(snapshot)
+                await self.apply(snapshot)
             }
         })
     }
 
-    private func apply(_ snapshot: PathSnapshot) {
+    private func apply(_ snapshot: PathSnapshot) async {
+        // NWPathSource deduplicates native NWPath equality before incrementing its
+        // generation, including route changes that keep the same physical adapter.
+        let changed = snapshot.generation != path.generation
+            || snapshot.status != path.status || snapshot.interfaces != path.interfaces
+            || snapshot.isExpensive != path.isExpensive || snapshot.isConstrained != path.isConstrained
+        let selected = snapshot.status == .satisfied ? snapshot.activeInterface : nil
+        let interfaceChanged = selected?.index != activeInterface?.index
         path = snapshot
-        let selected = snapshot.activeInterface
-        let changed = selected?.index != activeInterface?.index
         activeInterface = selected
-
-        if let engine = outageEngine {
-            Task { await engine.pathChanged(snapshot) }
-        }
-
         if changed {
-            smoothedDown = 0
-            smoothedUp = 0
-            downMbps = 0
-            upMbps = 0
-            let monitor = self.monitor
+            speedTest.cancel(reason: "Network changed. Run a new test on this connection.")
+            resetLiveDisplay(message: selected == nil ? "No network interface" : "Waiting for a fresh reading")
             if let selected {
-                Task { await monitor.setInterface(name: selected.name, index: selected.index) }
+                if interfaceChanged {
+                    await monitor.setInterface(name: selected.name, index: selected.index)
+                } else {
+                    await monitor.resetBaseline()
+                }
             } else {
-                Task { await monitor.clearInterface() }
+                await monitor.clearInterface()
             }
         }
+        await outageEngine?.pathChanged(snapshot)
     }
 
     // MARK: - Sleep and wake
 
     private func observeWorkspaceNotifications() {
         let center = NSWorkspace.shared.notificationCenter
-        let monitor = self.monitor
+        workspaceObservers.append(center.addObserver(
+            forName: NSWorkspace.willSleepNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in await self?.willSleep() }
+        })
+        workspaceObservers.append(center.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in await self?.didWake() }
+        })
+    }
 
-        center.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
-            let engine = self?.outageEngine
-            Task {
-                await monitor.pause()
-                await engine?.willSleep()
-            }
-        }
-        center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
-            // A stale baseline across a sleep would render the whole gap as one giant burst.
-            let engine = self?.outageEngine
-            Task {
-                await monitor.resetBaseline()
-                await monitor.start()
-                await engine?.didWake()
-            }
-        }
+    private func willSleep() async {
+        isSleeping = true
+        measuringCapacity = false
+        connectionState = .unknown
+        speedTest.cancel(reason: "Test interrupted because the Mac went to sleep.")
+        resetLiveDisplay(message: "Paused while the Mac sleeps")
+        await monitor.pause()
+        await outageEngine?.willSleep()
+    }
+
+    private func didWake() async {
+        isSleeping = false
+        resetLiveDisplay(message: "Resuming live monitoring")
+        updatePowerPolicy()
+        await monitor.resetBaseline()
+        await monitor.start()
+        await outageEngine?.didWake()
     }
 
     private func beginActivity() {

@@ -5,6 +5,7 @@ import SwiftUI
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let coordinator = AppCoordinator()
     private var statusItemController: StatusItemController?
+    private var terminationPending = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if handleCommandLineFlags() { return }
@@ -20,6 +21,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         coordinator.shutdown()
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard !terminationPending else { return .terminateLater }
+        terminationPending = true
+        Task {
+            await coordinator.prepareForTermination()
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        // Opening an already-running menu bar app from Finder should reveal its panel.
+        statusItemController?.showPanel()
+        return false
     }
 
     /// Maintenance entry points, run as

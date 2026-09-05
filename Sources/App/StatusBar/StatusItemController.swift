@@ -38,6 +38,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             button.action = #selector(handleClick)
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
             button.setAccessibilityLabel("Internet speed")
+            button.setAccessibilityIdentifier("internet-speed-reader")
 
             readout.translatesAutoresizingMaskIntoConstraints = false
             button.addSubview(readout)
@@ -70,14 +71,15 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private var lastWidthKey = ""
 
     private func refresh() {
+        coordinator.refreshTimeSensitiveState()
         let widthKey = "\(coordinator.settings.barLayout.rawValue)|\(coordinator.settings.unit.rawValue)|\(coordinator.settings.showUnits)"
         if widthKey != lastWidthKey {
             lastWidthKey = widthKey
             applyWidth()
         }
         readout.model = StatusItemRenderModel(
-            downText: SpeedFormatter.bar(coordinator.downMbps, unit: coordinator.settings.unit),
-            upText: SpeedFormatter.bar(coordinator.upMbps, unit: coordinator.settings.unit),
+            downText: coordinator.liveReadingsAvailable ? SpeedFormatter.bar(coordinator.downMbps, unit: coordinator.settings.unit) : "—",
+            upText: coordinator.liveReadingsAvailable ? SpeedFormatter.bar(coordinator.upMbps, unit: coordinator.settings.unit) : "—",
             activeDirection: coordinator.activeDirection,
             state: coordinator.connectionState,
             layout: coordinator.settings.barLayout,
@@ -85,6 +87,9 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             unit: coordinator.settings.unit
         )
         statusItem.button?.toolTip = tooltip()
+        statusItem.button?.setAccessibilityValue(coordinator.liveReadingsAvailable
+            ? "Download \(readout.model.downText), upload \(readout.model.upText) \(coordinator.settings.unit.shortLabel), \(coordinator.connectionState.spokenDescription)"
+            : "Live reading unavailable, \(coordinator.connectionState.spokenDescription)")
     }
 
     private func applyWidth() {
@@ -101,7 +106,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             let kind = interface.kind == .tunnel ? "VPN tunnel payload" : interface.kind.rawValue
             lines.append("Live on \(interface.name) (\(kind)), all apps")
         }
-        lines.append("Link-layer throughput, about 10 percent above payload")
+        lines.append(coordinator.liveStatusText)
+        lines.append("Interface traffic includes protocol overhead and local traffic; GO measures test payload.")
         return lines.joined(separator: "\n")
     }
 
@@ -131,6 +137,11 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         button.highlight(true)
     }
 
+    func showPanel() {
+        guard !popover.isShown else { return }
+        togglePopover()
+    }
+
     /// Called when a test finishes while the panel is closed, so the result is not missed.
     func reopenPanelForResult() {
         guard !popover.isShown, let button = statusItem.button else { return }
@@ -146,11 +157,12 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
         let runTest = NSMenuItem(title: "Run Speed Test", action: #selector(runSpeedTest), keyEquivalent: "")
         runTest.target = self
-        runTest.isEnabled = coordinator.speedTest.canStart
+        runTest.isEnabled = coordinator.canRunSpeedTest
         menu.addItem(runTest)
 
         let appleTest = NSMenuItem(title: "Apple Deep Test", action: #selector(runAppleTest), keyEquivalent: "")
         appleTest.target = self
+        appleTest.isEnabled = coordinator.canRunAppleTest
         menu.addItem(appleTest)
 
         let checkNow = NSMenuItem(title: "Check Connection Now", action: #selector(checkNow), keyEquivalent: "")

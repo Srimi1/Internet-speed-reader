@@ -5,57 +5,69 @@ public enum TrafficDirection: String, Sendable, Equatable, Codable {
     case upload
 }
 
-/// Decides which single number the menu bar shows.
-///
-/// Download is the resting state, because that is what most traffic is and what people
-/// mean by "my internet speed". It switches to upload only when upload genuinely
-/// dominates, and then holds that choice for a moment.
-///
-/// The dwell time is the whole point. Without it the readout would flip between arrows
-/// several times a second during any mixed transfer, since ACKs alone make the quiet
-/// direction non-zero. A label that changes meaning faster than you can read it is
-/// worse than one that is occasionally a second stale.
+/// Upload activity takes priority even while a faster download is running. Separate
+/// entry/exit thresholds and measured dwell times avoid toggling on short control bursts.
 public struct ActiveDirectionSelector: Sendable {
-    /// Upload must exceed download by this factor to take over the display.
-    public static let dominanceRatio: Double = 1.3
-    /// Below this, traffic is background chatter rather than a transfer worth showing.
-    public static let floorMbps: Double = 0.15
-    /// Once a direction wins it keeps the display at least this long.
-    public static let dwellSeconds: Double = 3.0
+    public static let entryMbps: Double = 0.15
+    public static let exitMbps: Double = 0.075
+    public static let entrySeconds: Double = 2
+    public static let exitSeconds: Double = 3
 
     public private(set) var current: TrafficDirection = .download
-    private var lastSwitch: ContinuousClock.Instant?
+    private var entrySince: ContinuousClock.Instant?
+    private var exitSince: ContinuousClock.Instant?
 
     public init() {}
 
-    /// Returns the direction to display for this sample.
     public mutating func update(
         downMbps: Double,
         upMbps: Double,
+        uploadActivityMbps: Double? = nil,
         now: ContinuousClock.Instant
     ) -> TrafficDirection {
-        let wanted = preferred(downMbps: downMbps, upMbps: upMbps)
-        guard wanted != current else { return current }
-
-        // Hold the current direction until the dwell time expires.
-        if let lastSwitch, now.seconds(since: lastSwitch) < Self.dwellSeconds {
+        let activity = uploadActivityMbps ?? upMbps
+        guard downMbps.isFinite, upMbps.isFinite, activity.isFinite,
+              max(downMbps, upMbps) >= Self.entryMbps else {
+            // Actual idle immediately restores download; do not hold an old upload arrow.
+            reset()
             return current
         }
 
-        current = wanted
-        lastSwitch = now
+        switch current {
+        case .download:
+            exitSince = nil
+            guard activity >= Self.entryMbps else {
+                entrySince = nil
+                return current
+            }
+            if let entrySince {
+                if now.seconds(since: entrySince) >= Self.entrySeconds {
+                    current = .upload
+                    self.entrySince = nil
+                }
+            } else {
+                entrySince = now
+            }
+        case .upload:
+            entrySince = nil
+            guard activity < Self.exitMbps else {
+                exitSince = nil
+                return current
+            }
+            if let exitSince {
+                if now.seconds(since: exitSince) >= Self.exitSeconds {
+                    reset()
+                }
+            } else {
+                exitSince = now
+            }
+        }
         return current
-    }
-
-    private func preferred(downMbps: Double, upMbps: Double) -> TrafficDirection {
-        // Nothing meaningful is moving: rest on download rather than picking a winner
-        // out of rounding noise.
-        guard max(downMbps, upMbps) >= Self.floorMbps else { return .download }
-        return upMbps > downMbps * Self.dominanceRatio ? .upload : .download
     }
 
     public mutating func reset() {
         current = .download
-        lastSwitch = nil
+        entrySince = nil
+        exitSince = nil
     }
 }

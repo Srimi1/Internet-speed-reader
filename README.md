@@ -1,131 +1,176 @@
-# Internet Speed Reader
+<p align="center">
+  <img src="docs/branding/logo.png" width="112" alt="Internet Speed Reader logo">
+</p>
 
-A menu bar app for macOS that tells you what your internet is doing right now, and
-tells you the moment it stops.
+<h1 align="center">Internet Speed Reader</h1>
 
-It sits in the top-right of the menu bar showing live download and upload throughput
-with a status dot. When the connection drops the dot and the numbers turn red and a
-notification arrives; when it comes back another notification says how long you were
-out. Click the item to run an Ookla-style speed test: ping, jitter, download, upload,
-your ISP and the server that answered.
+<p align="center">
+  See your Mac’s network activity at a glance. Test its capacity when you need to.
+</p>
 
-Everything runs locally. There is no account, no telemetry, and nothing to install
-beyond the app itself.
+<p align="center">
+  <a href="https://github.com/Srimi1/Internet-speed-reader/releases">Download</a> ·
+  <a href="#how-it-works">How it works</a> ·
+  <a href="CONTRIBUTING.md">Contribute</a> ·
+  <a href="SECURITY.md">Security</a>
+</p>
+
+![Illustrated overview of Internet Speed Reader](docs/branding/hero.png)
+
+A native **Swift menu bar app for macOS 14 and later**, built with AppKit and SwiftUI.
+It starts monitoring at launch and keeps updating while the panel is closed. Use it to
+see whether a download is progressing, notice an active upload, or spot a connection
+outage without opening another window.
+
+## What it does
+
+- **Automatic live readings.** One-second updates by default, with an optional battery
+  policy and recovery after missing counters, network changes and wake.
+- **The direction that matters.** Download is the default, including `↓ 0.0` when idle.
+  Sustained upload activity takes priority, even during a faster download.
+- **Both directions on demand.** Click the menu bar item for live download and upload;
+  use **Go / Stop** to control a capacity test.
+- **Clear measurement status.** Unavailable or stale live data shows `—`. Tests show
+  errors and quality labels; previous results retain their time and measurement method.
+- **Connection awareness.** Outage detection, a local outage log and silent notification
+  banners, subject to macOS notification permissions and Focus settings.
+- **Made for the menu bar.** Launch at login, selectable layouts and Mbps or MB/s units.
 
 ## Install
 
-Download the disk image from [Releases](https://github.com/Srimi1/Internet-speed-reader/releases),
-open it, and drag the app onto the Applications folder.
+Download a disk image from [GitHub Releases](https://github.com/Srimi1/Internet-speed-reader/releases),
+open it, and drag **InternetSpeedReader.app** into **Applications**. Open the app there;
+its icon appears in the menu bar. Launch at login is enabled by default and can be
+changed in Settings.
 
-The build is signed for development but is not notarised by Apple, so the first launch
-on another Mac is blocked. Right-click the app in Applications and choose Open, then
-Open again. You only need to do this once. The equivalent from Terminal:
+Public builds use an ad-hoc signature and are **not notarized by Apple**. Gatekeeper may
+block a downloaded build. Keep macOS security protections enabled; building the source
+locally is an alternative. Release notes identify the artifact and its SHA-256 checksum.
 
-```bash
-xattr -dr com.apple.quarantine /Applications/InternetSpeedReader.app
-```
+To move the menu bar item, hold **Command** and drag it. If a crowded or notched menu bar
+hides it, choose a more compact layout in Settings.
 
-Building from source instead:
+### Build from source
+
+You need macOS 14+, Xcode with Swift 6 support, and [XcodeGen](https://github.com/yonaskolb/XcodeGen).
+Builds do not require an API key or the maintainer’s signing certificate.
 
 ```bash
 git clone https://github.com/Srimi1/Internet-speed-reader.git
-cd Internet-speed-reader && ./scripts/install.sh
+cd Internet-speed-reader
+./scripts/install.sh
 ```
 
-That needs Xcode and XcodeGen (`brew install xcodegen`). To produce a disk image, run
-`./scripts/make-dmg.sh`.
+See [Contributing](CONTRIBUTING.md) for development setup, signing options and tests.
+`./scripts/make-dmg.sh` produces a disk image in `dist/`.
 
-## What the numbers mean
+## How it works
 
-The two figures in the menu bar and the two in a speed test measure different things,
-and they will not agree. That is expected, not a bug.
+The app answers two different questions:
 
-| | Menu bar | Speed test |
+| | Live menu bar and panel | Manual capacity test |
 |---|---|---|
-| Source | Kernel interface counters | Bytes this app transferred |
-| Covers | Every app on your Mac | Only the test |
-| Layer | Link layer, including TCP, TLS and retransmits | Payload only |
-| Effect | Reads roughly 10 to 17 percent higher | The comparable number |
+| Question | How much traffic is moving now? | How fast can this test connection transfer data? |
+| Source | macOS kernel interface counters | Payload transferred by the test engine |
+| Scope | All apps on the selected network interface | Cloudflare, or Apple Deep Test |
+| While idle | Usually near zero | Requires starting a test |
+| If data is invalid | An unavailable indicator | An error or a limited-result label |
 
-So the menu bar answers "is my connection busy right now", and a speed test answers
-"how fast is this connection". Use the second one when comparing against other tools.
+**Live monitoring** reads 64-bit byte and packet counters from the kernel. Speeds use
+actual elapsed time, with time-based smoothing. Interface selection avoids counting
+both a physical connection and its VPN tunnel. The meter measures aggregate traffic,
+which can include protocol overhead, retransmissions and local-network transfers;
+it does not identify individual apps or inspect their packet contents.
 
-Speed tests measure against Cloudflare's public endpoints, the same infrastructure
-behind speed.cloudflare.com, so you can cross-check a result in a browser. The Apple
-deep test in the right-click menu runs the system's own `networkQuality` tool instead,
-which reports responsiveness under load, a figure an idle ping cannot capture. Its
-results are kept in their own column because it measures different servers by a
-different method.
+Upload detection allows for small control packets before applying a sustained-activity
+threshold. This is a conservative heuristic: a small upload during heavy downloading
+can remain filtered, and VPN or QUIC traffic can affect classification. The displayed
+upload rate is always the measured rate; the allowance only selects the direction.
 
-## Outage detection
+**Go** uses Cloudflare’s public speed-test endpoints. Downloads require a valid response
+and the exact requested body length; uploads require a matching server-confirmed byte
+count. Final rates use validated transfers over measured time after a 1.5-second warm-up,
+including stalls. Concurrent streams share time and byte budgets. Provisional progress
+is separate from saved results, and cancelled or failed transfers cannot become a
+successful measurement.
 
-A path that goes down is not proof the internet is gone, and a path that is up is not
-proof that it works: a captive portal satisfies the network path perfectly while
-blocking everything. So the app actively probes, and it is deliberately slow to cry
-wolf and quick to forgive:
+**Apple Deep Test**, available from the panel’s menu, runs macOS `networkQuality` as a
+second opinion. It also reports responsiveness under load when available. Providers,
+routes and methods differ, so results need not match each other or Ookla. Cloudflare
+explains these differences in its [measurement overview](https://speed.cloudflare.com/about).
 
-- Two consecutive failed probes confirm an outage; a single success clears it.
-- The outage is stamped at the first failure, not the confirming one, so the duration
-  you read is honest.
-- Losing the network path waits out a three second debounce, otherwise roaming between
-  access points would flash red several times a day.
-- Closing the lid, switching networks and waking from sleep open a grace window that
-  suppresses notifications. The outage log still records everything.
-- Outages shorter than three seconds are treated as noise and never logged.
-- A portal is reported as "sign-in required" rather than as an outage.
+**Outage detection** combines network-path changes with small connectivity probes.
+Two failed probes confirm an outage, one success clears it, and grace periods reduce
+notifications during launch, wake and interface changes. Connectivity probes pause
+during sleep and capacity tests.
 
-Notifications use the standard alert level, so a Focus mode can hide them. The red menu
-bar is the signal that always shows.
+## Privacy and security
 
-## Menu bar position
+There is no account, API-key setup, analytics SDK or application telemetry service.
+The app does make network requests for these features:
 
-macOS does not let an app place itself next to the clock. Hold Command and drag the
-item to where you want it, and it stays there. On a Mac with a notch, the two-line
-layout can be pushed into the hidden overflow area when the bar is crowded; the
-one-line and dot-only layouts in Settings are there for that case.
+| Feature | Network or local data used |
+|---|---|
+| Live traffic meter | Local aggregate kernel counters; no packet-content capture |
+| Automatic connectivity checks | HTTPS requests to Google’s `gstatic.com`; Apple’s `captive.apple.com` HTTP check is the fallback for detecting captive portals |
+| Manual Go test | Synthetic test traffic and server metadata from `speed.cloudflare.com` |
+| Manual Apple Deep Test | Test traffic through the system `networkQuality` tool to Apple’s test service |
+| Local history | Test timestamps, speeds, quality and available provider/location/server metadata; outage times and interface information |
 
-## Settings
+Network providers can see ordinary connection information, including your public IP
+address. Upload tests generate random test data; they do not upload your documents.
+Preferences and history are stored in your macOS user account. Clear test history and
+outages from **Settings → Network**. These local records can contain personal network
+information, so review and redact them before attaching anything to a public issue.
 
-Launch at login, bar layout and units, how long an outage must last before it notifies,
-how many streams a test uses and for how long, a data-saver mode, and an estimate of
-how much data one test moves. Roughly: a ten second test on a 200 Mbps link moves about
-250 MB, so the app asks before testing on a metered connection.
+Read the [security policy](SECURITY.md) for private vulnerability reporting and the
+[contribution guidelines](CONTRIBUTING.md) before sharing logs, configuration or patches.
+
+## Current status and limits
+
+Version **1.1.0** adds automatic-monitoring recovery and validated test accounting.
+The core suite has **125 passing tests** covering timing, counters, direction selection,
+transport failures, cancellation, subprocess cleanup and history compatibility.
+See the [changelog](CHANGELOG.md) and [verification report](docs/VERIFICATION-1.1.md)
+for the tested scope and remaining checks.
+
+- During v1.1.0 verification, Cloudflare refused a download request with **HTTP 403**.
+  The app reports the refusal and does not save a successful result. Apple Deep Test
+  remains an alternative. Three successful sequential Cloudflare comparisons are
+  still outstanding; there is no claim of parity with Ookla.
+- Capacity tests are manual and transfer real data. Data-saver mode reduces budgets;
+  the displayed usage estimate is approximate.
+- Some existing Settings controls remain unwired, including metered-test confirmation,
+  notification timing preferences and automatic panel reopening. See
+  [remaining limitations](docs/ARCHITECTURE.md#remaining-limitations) before relying on them.
+- Exact application attribution, scheduled capacity tests, auto-update and Apple
+  notarization are not implemented.
 
 ## Development
 
+`SpeedCore` contains the UI-free measurement and state logic. The app target supplies
+AppKit, SwiftUI, lifecycle handling and system integrations. Tests link only `SpeedCore`
+and use local doubles; they do not start the menu bar app or run internet speed tests.
+
 ```bash
-xcodegen generate                    # regenerate the Xcode project
-xcodebuild -scheme InternetSpeedReader -destination 'platform=macOS' test
-./scripts/install.sh                 # build Release and install to /Applications
-./scripts/make-dmg.sh                # build dist/InternetSpeedReader-<version>.dmg
-./scripts/uninstall.sh               # remove the app and its data
+xcodegen generate --spec project.yml
+xcodebuild -project InternetSpeedReader.xcodeproj \
+  -scheme InternetSpeedReader \
+  -destination 'platform=macOS' \
+  -derivedDataPath "$HOME/Library/Developer/Xcode/DerivedData/InternetSpeedReader" \
+  test
 ```
 
-The code splits in two. `SpeedCore` is a plain library with no UI that holds the
-measurement and state logic; it is nonisolated and fully unit tested without a network.
-The app target holds AppKit and SwiftUI and runs on the main actor. The unit test bundle
-depends only on `SpeedCore` and has no test host, so running tests never launches the
-menu bar agent.
-
-Notes for anyone changing this code:
-
-- Interface counters come from `NET_RT_IFLIST2` and the 64-bit `if_data64` struct. The
-  32-bit counters behind `getifaddrs` wrap every 4.3 GB and had already wrapped on the
-  machine this was developed on.
-- Throughput is the sum of all streams counted into one shared ledger and divided by
-  measured elapsed time. Averaging per-request rates under-reports by roughly the stream
-  count.
-- Server processing time from `Server-Timing` is subtracted from latency only, never
-  from throughput.
-- A download response that is not `application/octet-stream` of exactly the requested
-  length aborts the test, so an intercepting portal can never be measured as speed.
+Explore the [architecture](docs/ARCHITECTURE.md), [design decisions](docs/DECISIONS.md)
+and [contribution guide](CONTRIBUTING.md). For bugs and feature requests, use
+[GitHub Issues](https://github.com/Srimi1/Internet-speed-reader/issues).
 
 ## Uninstall
 
-Turn off "Launch at login" in Settings first, then run `./scripts/uninstall.sh`, which
-removes the app along with its preferences, history and outage log.
+Turn off **Launch at login** in Settings, then run `./scripts/uninstall.sh` from the
+source checkout. The script removes the app, preferences, test history and outage log.
 
-## Licence
+## License
 
-Apache-2.0. Speed tests use Cloudflare's public endpoints and Apple's `networkQuality`;
-this project is not affiliated with, or endorsed by, either company or with Ookla.
+[Apache-2.0](LICENSE). This project is independent and is not affiliated with or endorsed
+by Apple, Cloudflare or Ookla.

@@ -1,41 +1,41 @@
 # Architecture decision records
 
-> Privacy note: personal signing, local paths and network metadata in this archived
-> document were generalized. Example values are not captured personal data.
+These records describe the current v1.1.0 design. Updated records explicitly replace the earlier method where behavior changed. Historical measurements and research remain context, not evidence that this version passed live acceptance. See [VERIFICATION-1.1.md](VERIFICATION-1.1.md) for current validation and [VERIFICATION.md](VERIFICATION.md) for the untouched v1.0 record. Earlier plans are history; current source is authoritative.
 
-This file explains why Internet Speed Reader is built the way it is. Each record states the situation, the choice, what the choice costs, and the evidence that motivated it. The evidence is either the code in this repository, a measurement taken on the development machine on 2026-09-04, or a finding from the pre-build research. Where the approved plan and the shipped code disagree, the code wins and the record says so under a "Deviation" note.
-
-Paths are relative to the repository root. Measurements are from one machine (macOS 26.6.2, Apple Silicon, Xcode 26.6, Swift 6.3.3, SDK 26.5, XcodeGen 2.45.4) on one ISP (Example ISP, Example City, served by Cloudflare Kolkata). Treat them as illustrations of the reasoning, not as constants.
+Paths are relative to the repository root. Measurements came from one development
+environment and one network. They illustrate the reasoning; they are not universal
+constants. Personal host and network metadata is intentionally excluded.
 
 | ADR | Decision | Primary file |
 |---|---|---|
 | 001 | AppKit `NSStatusItem` with a custom `NSView`, not SwiftUI `MenuBarExtra` | `Sources/App/StatusBar/StatusItemController.swift` |
-| 002 | Cloudflare endpoints as the built-in engine, Apple `networkQuality` optional | `Sources/SpeedCore/SpeedTest/Cloudflare/CloudflareSpeedTest.swift` |
-| 003 | 64-bit `NET_RT_IFLIST2` counters, never `getifaddrs` | `Sources/SpeedCore/Counters/RouteMessageParser.swift` |
-| 004 | One interface chosen from `NWPath`, never a sum | `Sources/SpeedCore/Path/PathSnapshot.swift` |
-| 005 | One `URLSession` per stream with `httpMaximumConnectionsPerHost = 1` | `Sources/SpeedCore/SpeedTest/Cloudflare/CloudflareSpeedTest.swift` |
-| 006 | Session-level delegate for download byte counting | `Sources/SpeedCore/SpeedTest/Cloudflare/DownloadStream.swift` |
-| 007 | Throughput is a sum into one `ByteLedger` sampled on one clock | `Sources/SpeedCore/SpeedTest/Cloudflare/ByteLedger.swift` |
-| 008 | Request size from the per-stream rate, two seconds of work per request | `Sources/SpeedCore/SpeedTest/Cloudflare/ChunkLadder.swift` |
-| 009 | 1.5 s warm-up discard, trim lowest 30% and highest 10% | `Sources/SpeedCore/SpeedTest/Cloudflare/ThroughputAggregator.swift` |
-| 010 | Server processing time subtracted from latency only | `Sources/SpeedCore/SpeedTest/Cloudflare/ServerTiming.swift` |
-| 011 | Strict response validation is a hard abort | `Sources/SpeedCore/SpeedTest/Cloudflare/ResponseValidator.swift` |
-| 012 | File-backed random upload fixtures | `Sources/SpeedCore/SpeedTest/Cloudflare/UploadFixture.swift` |
-| 013 | Link-layer live meter and payload speed test kept separate and labelled | `Sources/App/StatusBar/StatusItemController.swift` |
+| 002 | Cloudflare for on-demand capacity, Apple as a separate second opinion | `Sources/SpeedCore/SpeedTest/Cloudflare/CloudflareSpeedTest.swift` |
+| 003 | 64-bit kernel byte and packet counters | `Sources/SpeedCore/Counters/RouteMessageParser.swift` |
+| 004 | One physical interface, with path-use evidence and no VPN double counting | `Sources/SpeedCore/Path/PathSnapshot.swift` |
+| 005 | One ephemeral URLSession per transfer stream | `Sources/SpeedCore/SpeedTest/Cloudflare/CloudflareSpeedTest.swift` |
+| 006 | Session-level transfer delegate with cancellation through completion | `Sources/SpeedCore/SpeedTest/Cloudflare/DownloadStream.swift` |
+| 007 | Separate provisional progress from confirmed payload | `Sources/SpeedCore/SpeedTest/Cloudflare/PhaseMeasurement.swift` |
+| 008 | Per-stream sizing within shared time and byte budgets | `Sources/SpeedCore/SpeedTest/Cloudflare/ChunkLadder.swift` |
+| 009 | Methodology 2: measured payload/time, warm-up excluded, stalls retained | `Sources/SpeedCore/SpeedTest/Cloudflare/ThroughputAggregator.swift` |
+| 010 | Subtract server processing from HTTP latency only | `Sources/SpeedCore/SpeedTest/Cloudflare/ServerTiming.swift` |
+| 011 | Validate completed transfers before accepting payload | `Sources/SpeedCore/SpeedTest/Cloudflare/ResponseValidator.swift` |
+| 012 | File-backed random upload fixtures with exact reservation sizes | `Sources/SpeedCore/SpeedTest/Cloudflare/UploadFixture.swift` |
+| 013 | Keep actual interface traffic distinct from capacity tests | `Sources/App/StatusBar/StatusItemController.swift` |
 | 014 | Outage hysteresis: two failures down, one success up, 3 s path debounce | `Sources/SpeedCore/Outage/ConnectivityStateMachine.swift` |
 | 015 | Grace windows gate banners, not the ledger; sleep closes; heartbeat | `Sources/SpeedCore/Outage/OutageLedger.swift` |
 | 016 | HTTP probes under one 3 s round deadline, no ICMP, no gateway | `Sources/SpeedCore/Probe/ConnectivityProbe.swift` |
-| 017 | Injected `TimeSource` and `withDeadline` around every network call | `Sources/SpeedCore/Support/Deadline.swift` |
-| 018 | One adaptive number in the bar: 1.3x dominance, 0.15 Mbps floor, 3 s dwell | `Sources/SpeedCore/Counters/ActiveDirectionSelector.swift` |
+| 017 | Measured monotonic time, cadence-aware freshness and live power updates | `Sources/SpeedCore/Support/Deadline.swift` |
+| 018 | Sustained upload priority, with an explicit control-packet heuristic | `Sources/SpeedCore/Counters/ActiveDirectionSelector.swift` |
 | 019 | Bar strings: half-up rounding, five characters max, pinned width | `Sources/SpeedCore/Support/Formatters.swift` |
 | 020 | Alerts are banner plus red bar plus log, no sound, `.active` level | `Sources/App/NotificationService.swift` |
 | 021 | Launch at login on by default, reconciled on every launch | `Sources/App/AppCoordinator.swift` |
-| 022 | Versioned atomic JSON files for history and the outage log | `Sources/SpeedCore/Support/AtomicJSONStore.swift` |
-| 023 | Apple Development identity, team LOCAL_TEAM_ID, sandbox off, hardened runtime on | `project.yml` |
+| 022 | Versioned atomic history with additive method metadata | `Sources/SpeedCore/Support/AtomicJSONStore.swift` |
+| 023 | Local signing configuration and public build privacy | `project.yml` |
 | 024 | Deployment target macOS 14 | `project.yml` |
 | 025 | Swift 6 language mode with per-target default actor isolation | `project.yml` |
 | 026 | Repository inside iCloud Drive, build products outside it | `scripts/make-dmg.sh` |
 | 027 | UDZO disk image on APFS, staged outside iCloud, app and image signed | `scripts/make-dmg.sh` |
+| 028 | Run ownership through cancellation and cleanup | `Sources/SpeedCore/Support/SpeedTestRunGate.swift` |
 
 ---
 
@@ -51,147 +51,123 @@ Paths are relative to the repository root. Measurements are from one machine (ma
 
 ---
 
-## ADR-002: Cloudflare endpoints as the built-in engine, Apple `networkQuality` optional
+## ADR-002: Cloudflare for on-demand capacity, Apple as a separate second opinion
 
-**Context.** The user wanted a zero-install engine that reports the Ookla-style tuple: ping, jitter, download, upload, ISP, and server. The research evaluated five sources and found that only `speed.cloudflare.com` returns all of them from one place with a permissive reference implementation (`@cloudflare/speedtest`, MIT). Ookla's CLI is proprietary, restricted to personal command-line use, and only a 2022 build (1.2.0) is downloadable. M-Lab's acceptable-use policy caps automated clients at four tests a day and publishes every measurement under CC0. Fast.com needs a token scraped from a content-hashed JavaScript bundle that rotates on every deploy. LibreSpeed has no maintained public server pool and an LGPL-3.0 backend. Apple's `networkQuality` takes about 26 s, offers no ISP, jitter or progress, and always uses Apple's CDN (a Singapore edge for this Indian client).
+**Decision.** GO uses Cloudflare's public endpoints. Apple Deep Test uses the installed `/usr/bin/networkQuality` tool. Live monitoring starts independently and does not schedule capacity tests. Provider, timestamp and quality identify a result; methods and servers can legitimately disagree with Ookla.
 
-**Decision.** `CloudflareSpeedTest` is the built-in engine, using `GET /meta` (with the required `Referer` and `Origin` headers), `GET /__down?bytes=N` and `POST /__up`. `NetworkQualityRunner` spawns `/usr/bin/networkQuality -c -s -M 15` behind the right-click "Apple Deep Test" item, with a hard kill at M plus 10 s. Apple's numbers land in `AppleExtras`, are labelled "Apple CDN" with the endpoint, and are never written into the Cloudflare columns. Tests are on demand only, spaced 30 s apart (`SpeedTestController.minimumSpacing`), with a 15 minute block after a 403 or 429.
+**Consequences.** Cloudflare metadata supplies ISP/location when available, otherwise the UI uses an explicit fallback. Only HTTP 429 blocks that engine for 15 minutes; HTTP 403 is an explicit server refusal of unknown cause. Apple remains separate after shared run spacing. Loaded-latency fields remain unpopulated. The existing metered-confirmation preference is still unwired and must not be advertised as protection.
 
-**Consequences.** Cloudflare is not a documented third-party API. The `Referer` gate, the 50 MiB per-request cap and the bot rules can change without notice, so decoding is defensive (`CloudflareMeta`), the user agent names the repository, and the Apple engine is the fallback the UI points to when rate limited. Deviation: the plan's ISP fallback chain (`__down` headers, then Apple's `/.well-known/nq` headers, then "Unknown ISP") is not implemented; the code goes straight from `/meta` to `CloudflareMeta.ispDisplayName`, which returns "Unknown ISP" when both `asOrganization` and `asn` are missing. Deviation: the plan's loaded-latency sampler is not implemented; `downloadLoadedLatencyMs` and `uploadLoadedLatencyMs` exist in `SpeedTestResult` but are never assigned. Deviation: the plan's escalating 15 min, 1 h, 6 h backoff is a single 15 minute block in `SpeedTestController.fail`.
-
-**Evidence.** `Sources/SpeedCore/SpeedTest/Cloudflare/CloudflareSpeedTest.swift`, `Sources/SpeedCore/SpeedTest/Cloudflare/CloudflareEndpoints.swift`, `Sources/SpeedCore/Apple/NetworkQualityRunner.swift`, `Sources/App/SpeedTestController.swift`. Live run on 2026-09-04: 176.3 Mbps download, 137.9 Mbps upload, ping 82.8 ms, jitter 15.6 ms, ISP "Example ISP", client Example City, colo Kolkata (CCU), protocol http/1.1, 23.6 s wall time. Research report, topic 1, recommendation and "rejected engines".
+**Evidence.** `CloudflareSpeedTest`, `NetworkQualityRunner`, `SpeedTestController`, `PanelView`. The earlier provider research explains the original choice; it does not establish current provider performance or API guarantees.
 
 ---
 
-## ADR-003: 64-bit `NET_RT_IFLIST2` counters, never `getifaddrs`
+## ADR-003: 64-bit kernel byte and packet counters
 
-**Context.** The live meter needs cumulative per-interface byte counters. `getifaddrs` exposes `struct if_data`, whose `ifi_ibytes` and `ifi_obytes` are `u_int32_t` and wrap every 4.29 GB. The sysctl path `NET_RT_IFLIST2` returns `if_msghdr2` records whose `ifm_data` is `struct if_data64`. The research read both APIs back to back on the development machine and found en0 receive bytes of 1,787,888,724 via the 32-bit path and 6,082,856,020 via the 64-bit path, a difference of exactly 2^32. The critique reproduced the wrap independently with `netstat -ib` against a ctypes read of `getifaddrs`.
+**Decision.** Keep `NET_RT_IFLIST2` and `if_data64`. `IFCounters` now carries `rx`, `tx` and `txPackets`; `RouteMessageParser` reads `ifi_ibytes`, `ifi_obytes` and `ifi_opackets`. It walks message lengths and performs unaligned loads. A backwards byte or packet counter invalidates the baseline.
 
-**Decision.** `SysctlCounterReader` issues `sysctl` with mib `[CTL_NET, PF_ROUTE, 0, 0, NET_RT_IFLIST2, index]`, retrying once on `ENOMEM`, and hands the raw buffer to `RouteMessageParser`. The parser always advances by `ifm_msglen`, uses `loadUnaligned`, and reads `ifm_data.ifi_ibytes` and `ifi_obytes` only from `RTM_IFINFO2` messages. Passing the interface index in `mib[5]` asks the kernel for a single record on the 1 Hz path.
+**Reason.** The v1.0 investigation demonstrated 32-bit byte-counter wrap. Packet totals provide a local, permission-free control-traffic allowance without packet capture. They are aggregate statistics, not protocol or application attribution.
 
-**Consequences.** The parser is pure and is tested against synthetic buffers, including a counter above 2^32, an odd-length foreign message, a truncated tail, and a zero-length header. `ThroughputCalculator` treats any counter decrease as an interface reset and rebaselines rather than emitting a spike, because a 64-bit counter cannot legitimately wrap in human time. No root is required. A test-builder bug during the build emitted a message shorter than its own header, which the kernel never does; that was fixed in the builder, not the parser.
-
-**Evidence.** `Sources/SpeedCore/Counters/SysctlCounterReader.swift`, `Sources/SpeedCore/Counters/RouteMessageParser.swift`, `Sources/SpeedCore/Counters/ThroughputSampler.swift`, `Tests/SpeedCoreTests/RouteMessageParserTests.swift`. Research report, topic 3, verified items 1 to 4; critique spot-check 3. Validation on 2026-09-04: a 50 MiB download read 154.45 Mbps at the interface against 140.96 Mbps of payload (57,447,424 interface bytes for 52,428,800 payload bytes in 2.976 s).
+**Evidence.** Counter/parser code and `RouteMessageParserTests`, including values above the 32-bit boundary. Historical measurements remain in the v1.0 verification report.
 
 ---
 
-## ADR-004: One interface chosen from `NWPath`, never a sum
+## ADR-004: One physical interface, with path-use evidence and no VPN double counting
 
-**Context.** Interface counters are system wide, and several interfaces carry traffic that is not internet traffic: `lo0` is the machine talking to itself, `awdl0` and `llw0` are Apple's peer-to-peer radios (the research found 34 MB on `awdl0` on an idle host), and a VPN tunnel (`utun*`) increments both the tunnel and the physical interface for the same payload. `NWPath.availableInterfaces` also reports `en0` twice, once per address family, verified during research and again during the build.
+**Decision.** Deduplicate by index and exclude loopback/Apple peer-to-peer interfaces. Prefer physical candidates whose type is used by `NWPath`, then another physical candidate, then a tunnel. Preserve path order for same-type ties and label tunnel fallback. Never add tunnel bytes to the underlying physical bytes.
 
-**Decision.** `ActiveInterfaceSelector.select` dedupes by index, drops names in `excludedNames` (`lo0`, `awdl0`, `llw0`, `anpi0` to `anpi2`, `bridge0`, `ap1`, `gif0`, `stf0`), and returns the first physical interface (`wifi`, `wiredEthernet`, `cellular`). If no physical interface exists it returns the first tunnel, and the UI labels that case "tunnel payload". `NWPathSource` classifies `.other` interfaces whose names start with `utun`, `ipsec`, `ppp`, `tun`, `tap` or `wg` as tunnels. Interfaces are never summed.
+**Consequences.** `usesInterfaceType` improves selection among Wi-Fi/Ethernet candidates but does not identify an exact route among same-type adapters. Native `NWPath` equality suppresses duplicate callbacks; generation advances when the native path changes, including same-adapter route changes. Such changes invalidate live baselines and interrupt an active capacity test.
 
-**Consequences.** With a split-tunnel VPN the meter shows the physical interface and ignores the tunnel. With a full-tunnel VPN it shows decrypted tunnel payload, which is a different quantity, so the tooltip and panel say which one is displayed. The plan called for a real VPN connect and disconnect test in M3; the session facts do not record one, so the tunnel branch is covered by unit tests only.
-
-**Evidence.** `Sources/SpeedCore/Path/PathSnapshot.swift`, `Sources/SpeedCore/Path/NWPathSource.swift`, `Tests/SpeedCoreTests/ActiveInterfaceSelectorTests.swift`. Research report, topic 3, verified item 7 and gotchas 10 and 11. Session fact: `NWPath` returned `en0` twice during the counter validation.
+**Evidence.** `NWPathSource`, `PathSnapshot`, `ActiveInterfaceSelectorTests`; actual VPN and multi-adapter coverage is recorded separately in the versioned verification report.
 
 ---
 
-## ADR-005: One `URLSession` per stream with `httpMaximumConnectionsPerHost = 1`
+## ADR-005: One ephemeral URLSession per transfer stream
 
-**Context.** A parallel-stream speed test only measures the link if the streams are separate TCP connections. The critique pointed out two ways `URLSession` silently defeats that: `httpMaximumConnectionsPerHost` defaults to 6, so a seventh task queues, and if the host negotiates HTTP/2 all requests to one origin are multiplexed onto one connection with one congestion window. The build confirmed `speed.cloudflare.com` currently negotiates HTTP/1.1 only, and that a single 25 MiB stream reached 120 Mbps while four parallel streams summed to about 160 Mbps.
+**Decision.** Production `URLSessionCloudflareTransport` creates one session per stream, with `httpMaximumConnectionsPerHost = 1`, no cache, identity encoding and explicit deadlines. Store the negotiated network protocol when available; do not assume it remains HTTP/1.1.
 
-**Decision.** Every download stream is its own `DownloadStream`, which owns its own `URLSession` built from `CloudflareSpeedTest.makeSessionConfiguration`, and every upload task in the task group creates its own session. That configuration sets `httpMaximumConnectionsPerHost = 1`, `httpShouldUsePipelining = false`, `waitsForConnectivity = false`, no cache, `Accept-Encoding: identity`, and a user agent that names the repository. The negotiated protocol from `URLSessionTaskMetrics` is stored in `SpeedTestResult.networkProtocol` so a future change to HTTP/2 is visible rather than silent.
+**Reason.** Stream isolation makes connection ownership and cancellation explicit and avoids a shared session silently changing effective concurrency. The initial request on each stream shares its phase's time/data budget.
 
-**Consequences.** N streams are N connections by construction, so no coalescing detection is needed. Sessions are invalidated at the end of each phase. The cost is N session objects per phase, which is trivial at the default six download and four upload streams.
-
-**Evidence.** `Sources/SpeedCore/SpeedTest/Cloudflare/CloudflareSpeedTest.swift` (header comment, `makeSessionConfiguration`, `runDownloadPhase`, `runUploadPhase`), `Sources/SpeedCore/SpeedTest/Cloudflare/DownloadStream.swift`. Session facts: ALPN accepted http/1.1 only; 120 Mbps single stream versus about 160 Mbps across four; live run with six streams reached 176.3 Mbps. Critique, "missing" item 2.
+**Evidence.** `StreamDelegates.swift`, `DownloadStream`, `CloudflareSpeedTest.makeSessionConfiguration` and injected transport tests.
 
 ---
 
-## ADR-006: Session-level delegate for download byte counting
+## ADR-006: Session-level transfer delegate with cancellation through completion
 
-**Context.** The first live run reported a correct upload and a download of 0.0 Mbps. The cause was the convenience API `URLSession.data(for:delegate:)`: it accumulates the body itself and never calls `urlSession(_:dataTask:didReceive:)` on the task-scoped delegate, so the ledger saw no bytes even though the transfer completed.
+**Decision.** `DownloadStream` owns its session and pending request identity for both downloads and file-backed uploads. Cancellation records state even if it arrives before continuation installation, cancels the URL task, and finishes through its completion callback. Redirects and validation failures cannot become ordinary successful measurements.
 
-**Decision.** `DownloadStream` is an `NSObject` conforming to `URLSessionDataDelegate` and is installed as the session-level delegate when its `URLSession` is created, with a serial `OperationQueue`. It counts bytes in `didReceive data`, validates headers in `didReceive response`, captures the protocol in `didFinishCollecting metrics`, and bridges completion back to `async` through a `CheckedContinuation` held behind an `OSAllocatedUnfairLock`. Uploads keep the per-task delegate (`UploadStreamDelegate`) because `didSendBodyData` is delivered to task delegates.
+**Reason.** A task-scoped `data(for:delegate:)` delegate did not receive download data callbacks during v1.0 development. Merely dropping a Swift task also cannot prove network cleanup is finished.
 
-**Consequences.** The download path has more code than the one-line convenience API, and the stream must be invalidated explicitly (`invalidate()`), which the phase does in a `defer`. Byte counts now arrive as data streams in, which is what the 100 ms slice sampler needs.
-
-**Evidence.** `Sources/SpeedCore/SpeedTest/Cloudflare/DownloadStream.swift` (header comment), `Sources/SpeedCore/SpeedTest/Cloudflare/StreamDelegates.swift`. Session fact: bug 1, caught by comparing the app's result with the speed test's own upload figure and a known-good transfer.
+**Evidence.** `DownloadStream`, transfer tests and the historical zero-download regression in `VERIFICATION.md`.
 
 ---
 
-## ADR-007: Throughput is a sum into one `ByteLedger` sampled on one clock
+## ADR-007: Separate provisional progress from confirmed payload
 
-**Context.** The single biggest gap the critique found in the research was the aggregation rule. The reference client's "0.9 percentile of per-request rate" is a per-request statistic; with six parallel streams each request sees about one sixth of the link, so any average or percentile of per-request rates under-reports by roughly the stream count. Ookla-comparable throughput is total bytes across all streams over a shared wall-clock window.
+**Decision.** `ByteLedger` drives the live gauge only. Each request records bytes and original callback times in `RequestPayloadTimeline`; `ConfirmedPayloadLedger` commits that timeline only after request validation succeeds and its byte total matches the receipt. All streams share one phase timeline.
 
-**Decision.** All streams in a phase call `ByteLedger.add` on one shared counter guarded by `OSAllocatedUnfairLock`. `SliceSampler` reads that counter every 100 ms on the injected clock and records `deltaBytes * 8 / 1e6 / measuredElapsed` as a `ThroughputSlice`. Per-request durations are never used for throughput. A request cancelled at the phase deadline still contributes every byte it delivered because the ledger already counted them.
+**Consequences.** Failed/unconfirmed requests can affect provisional progress but never the saved headline. Confirming an upload does not move all its bytes to acknowledgement time. The recorded transfer timeline retains empty intervals, stalls and the final partial interval. Shared `PhaseByteBudget` reservations include in-flight requests, preventing streams from overshooting the cap together.
 
-**Consequences.** Throughput is bytes against a timeline, not against request duration, which is why server processing time is not subtracted from it (ADR-010). The last slice is dropped in `SliceSampler.stop` because it covers a partial interval after the streams stopped. `ByteLedgerTests.concurrentAdds` is the direct regression: eight tasks adding into one ledger must total eight times the per-task bytes.
-
-**Evidence.** `Sources/SpeedCore/SpeedTest/Cloudflare/ByteLedger.swift` (header comment calls this "the single most important design decision in the engine"), `SliceSampler` in `Sources/SpeedCore/SpeedTest/Cloudflare/CloudflareSpeedTest.swift`, `Tests/SpeedCoreTests/SpeedTestMathTests.swift`. Critique, "missing" item 1. Live run: headline 176.3 Mbps, byte-weighted mean 158.7 Mbps, peak 292.1 Mbps, all stored side by side in `SpeedTestResult` so the aggregation choice is auditable.
+**Evidence.** `PhaseMeasurement.swift`, `CloudflareSpeedTest.runPhase` and phase/ledger regression tests. This supersedes using the provisional shared ledger as final result evidence.
 
 ---
 
-## ADR-008: Request size from the per-stream rate, two seconds of work per request
+## ADR-008: Per-stream sizing within shared time and byte budgets
 
-**Context.** Cloudflare rejects `__down` requests above 50 MiB with a 403 whose body is one byte, so a request cannot simply ask for "a lot". Too small a request is also wrong: each request pays a round trip of idle socket time between completions, and a common mistake is to divide the link rate by the stream count when sizing, which makes every request finish in a fraction of a second and reads fast links low.
+**Decision.** A stream starts with a small probe that can finish on slow links and sizes subsequent requests for roughly two seconds at its own measured rate. Download chunks retain a conservative 50 MiB client ceiling after earlier larger requests were refused; this is not a published endpoint limit. Later 16 MiB requests also received HTTP 403, whose cause remains unknown (see [current verification](VERIFICATION-1.1.md)). Upload uses bounded fixture rungs. A final reservation may be smaller than the preferred size and is sent at that exact size.
 
-**Decision.** `ChunkLadder.size(forPerStreamBytesPerSecond:)` takes the per-stream rate (the probe rate divided by the stream count once, in the phase), multiplies by `targetSecondsPerRequest = 2.0`, rounds up to a power of two, and clamps to `[262_144, 52_428_800]`. An unknown rate starts at `firstProbeBytes = 1_048_576`. A 1 MiB probe request measures the rate before the phase begins. Upload uses the same two-second target to pick the nearest fixture rung (ADR-012).
+**Consequences.** Probes consume the same phase budget. Stop admitting requests at the configured duration and allow a bounded 2-second drain for in-flight completion. Exclude unfinished transfers, include the measured drain time, and label the result incomplete if enough confirmed measurement remains. Data-limited runs carry a separate quality label.
 
-**Consequences.** Every request keeps its connection busy for about two seconds, so per-request overhead is a small fraction of the phase. Because the clamp equals the verified cap, the byte-cap 403 cannot be triggered by the ladder. Deviation: the plan specified one halving retry on a byte-cap 403; the code classifies that response as `ResponseValidation.byteCapExceeded` but the download loop does not act on it, and the clamp makes the case unreachable.
-
-**Evidence.** `Sources/SpeedCore/SpeedTest/Cloudflare/ChunkLadder.swift`, `runDownloadPhase` and `probeDownloadRate` in `Sources/SpeedCore/SpeedTest/Cloudflare/CloudflareSpeedTest.swift`, `Tests/SpeedCoreTests/SpeedTestMathTests.swift` (`ChunkLadderTests`). Research report, topic 1, verified item 17 (bytes=52428800 returns 200, bytes=104857600 returns 403 with `Content-Length: 1`). Live run used 2048 KiB chunks across six streams.
+**Evidence.** `ChunkLadder`, `UploadFixture`, `PhaseByteBudget`, `CloudflareSpeedTest.runPhase` and their tests. Never divide an already per-stream rate by the stream count again.
 
 ---
 
-## ADR-009: 1.5 s warm-up discard, trim lowest 30% and highest 10%
+## ADR-009: Methodology 2: measured payload/time, warm-up excluded, stalls retained
 
-**Context.** The first stretch of any transfer is DNS, TCP and TLS setup, then slow start and the socket buffer filling. Including it drags the result below what the link sustains. Individual 100 ms slices are also noisy: a stall produces a near-zero slice, and delegate callback coalescing can bunch bytes into one slice and overstate it.
+**Decision.** Exclude the first 1.5 seconds, then divide confirmed payload by actual remaining measurement time. Weight slices by their durations and keep zero-rate stalls and the partial tail. The former lowest-30%/highest-10% trimming is removed. Store full-phase mean and a one-second-window peak separately from the headline.
 
-**Decision.** `ThroughputAggregator.summarize` discards slices with `secondsSincePhaseStart < 1.5`, sorts the rest, drops the lowest 30% and highest 10%, and reports the mean of the remainder as the headline `mbps`. It also reports `meanMbps` (total bytes over total seconds, untrimmed) and `peakMbps` (the 95th percentile slice). Fewer than 10 usable slices is `ThroughputAggregationError.insufficientData`, which the engine turns into `SpeedTestError.insufficientData`; 10 to 29 slices are flagged `Quality.shortSample`.
+**Consequences.** At least one second with usable positive measurement is required. Quality is incomplete, dataLimited, shortSample (under 3 seconds), variable (one-second-window coefficient of variation above 0.25), or good, in that precedence. Windowing avoids interpreting callback coalescing as network variation. New results carry `methodologyVersion = 2`; older results are preserved, not silently recalculated.
 
-**Consequences.** The headline is comparable to other speed tests rather than systematically low. A short data-saver phase (5 s download) still produces a number but is flagged rough. The untrimmed mean is stored alongside so a disputed headline can be checked against raw bytes and seconds. The trim constants are the single place to change if the aggregation is ever revisited.
-
-**Evidence.** `Sources/SpeedCore/SpeedTest/Cloudflare/ThroughputAggregator.swift`, `Tests/SpeedCoreTests/SpeedTestMathTests.swift` (`ThroughputAggregatorTests`: warm-up discard, stall trimming, mean cross-check, insufficient data, short-sample flag). Critique, "missing" item 4 (warm-up discard) and item 1 (trimmed statistic). Live run: headline 176.3 Mbps against a mean of 158.7 Mbps, which is the ramp and stalls showing up in the untrimmed figure.
+**Evidence.** `ThroughputAggregator`, confirmed timeline/phase tests and `SpeedTestResult`. Earlier trimmed results and their original verification remain historical observations, not method-2 benchmarks.
 
 ---
 
-## ADR-010: Server processing time subtracted from latency only
+## ADR-010: Subtract server processing from HTTP latency only
 
-**Context.** Cloudflare's `Server-Timing` header reports `cfSpeedEdge` and `cfSpeedWorker` durations, and a cold worker can add hundreds of milliseconds that have nothing to do with the network. The research measured raw time-to-first-byte of 213 to 793 ms on a link whose server-measured TCP RTT was 31 to 39 ms. The older `cfRequestDuration` metric that tutorials mention no longer exists. Throughput, by contrast, is bytes over a wall-clock timeline (ADR-007), so per-request server time has no place in it.
+**Decision.** Parse `Server-Timing`, subtract server processing from HTTP timing and retain the median/jitter calculation. Store server-measured TCP minimum RTT separately when present. Throughput time is never reduced by server timing.
 
-**Decision.** `measureLatency` issues 20 sequential `GET /__down?bytes=0` requests on a dedicated session within a 6 s cap. Each sample is the measured round trip minus `ServerTiming.totalServerMs` (edge plus worker), clamped at zero. The first sample, which pays connection setup, is kept separately and used only if fewer than five warm samples exist. Ping is the median, jitter the mean absolute difference between consecutive samples. The `cfL4` header's `min_rtt` (microseconds) is stored separately as `tcpMinRttMs` and labelled as server-measured TCP RTT. Server time is never subtracted from throughput.
+**Consequences.** This measures HTTP latency to the test provider, not ICMP latency or a guarantee of matching another speed-test site. A different server, route or method can produce a different result. The metadata and timing endpoints remain deadline-bound and cancellation-aware.
 
-**Consequences.** The displayed ping is the same method speed.cloudflare.com itself uses, so users comparing against the web page see a matching number. ICMP reads lower because it takes a different anycast path, and the app does not pretend otherwise. `cfL4`'s `lost` and `retrans` counters are not shown as packet loss because they describe one short-lived connection and read zero on healthy and mildly lossy links alike.
-
-**Evidence.** `Sources/SpeedCore/SpeedTest/Cloudflare/ServerTiming.swift`, `measureLatency` in `Sources/SpeedCore/SpeedTest/Cloudflare/CloudflareSpeedTest.swift`, `Tests/SpeedCoreTests/SpeedTestMathTests.swift` (`ServerTimingTests`). Latency study on 2026-09-04, 20 samples: raw HTTP median 77.2 ms; minus Server-Timing 52.4 ms; `cfL4 min_rtt` median 46.1 ms; ICMP ping 20 ms; curl TCP connect 34 ms. Conclusion recorded at the time: HTTP minus server time tracks the server's TCP RTT within about 6 ms. Research report, topic 1, verified items 16 and 19, gotchas 10 and 11.
+**Evidence.** `ServerTiming`, `CloudflareSpeedTest.measureLatency` and parser/math tests. The v1.0 latency study is retained in historical verification.
 
 ---
 
-## ADR-011: Strict response validation is a hard abort
+## ADR-011: Validate completed transfers before accepting payload
 
-**Context.** A captive portal or an intercepting proxy can answer `GET /__down?bytes=N` with a 200 and an HTML page. If those bytes were counted, the app would report a plausible-looking speed for a network that has no internet. On `__up`, the `bytes=` query parameter is ignored and an empty POST returns 200, so a 200 alone proves nothing about what was sent.
+**Decision.** Downloads require status/content-type/content-length validation and exact actual received body length. Uploads require an exact positive `cf-meta-upload-bytes` confirmation and matching sent progress. Reject redirects, malformed metadata, truncated bodies and unconfirmed uploads. Interception/rate-limit errors abort the run; a cancelled run never writes success.
 
-**Decision.** `ResponseValidator.validateDownload` accepts a response only if the status is 200, `Content-Type` starts with `application/octet-stream`, and `expectedContentLength` equals the requested byte count; anything else is `.intercepted(reason:)`, a 403 with a body of at most one byte is `.byteCapExceeded`, and other 403 or 429 responses are `.rateLimited`. `DownloadStream` cancels the task in `didReceive response` when validation fails. `validateUpload` requires the `cf-meta-upload-bytes` header to be present, positive, and equal to the fixture size. An interception in any stream ends the phase and throws `SpeedTestError.interception`, which the UI shows as "Test blocked" with no number.
+**Consequences.** Strict validation can produce an error where a looser client would show a misleading number. `uploadBytes` and `uploadVerifiedBytes` in method-2 Cloudflare results both describe confirmed payload; provisional bytes are not substituted for them.
 
-**Consequences.** A test can fail where a looser client would show a number. That is intended: an interception error is more useful than a fake result. The upload result carries `uploadVerifiedBytes`, the count the server confirmed, next to the bytes the client sent.
-
-**Evidence.** `Sources/SpeedCore/SpeedTest/Cloudflare/ResponseValidator.swift`, `Sources/SpeedCore/SpeedTest/Cloudflare/DownloadStream.swift`, `Sources/App/SpeedTestController.swift` (`fail`). `Tests/SpeedCoreTests/CloudflareDecodingTests.swift` (`ResponseValidatorTests`). Critique spot-check 2 (empty `__up` POST returns 200 with zero bytes) and "missing" item 17. Live run: 122.7 MB uploaded, all server-confirmed via `cf-meta-upload-bytes`.
+**Evidence.** `ResponseValidator`, `DownloadStream`, `CloudflareSpeedTest` and transport/phase tests.
 
 ---
 
-## ADR-012: File-backed random upload fixtures
+## ADR-012: File-backed random upload fixtures with exact reservation sizes
 
-**Context.** `URLSession.uploadTask(with:from:)` holds the whole body in memory. A multi-hundred-megabyte upload on a fast link would balloon a menu bar agent's footprint. A custom `InputStream` subclass would avoid that but adds a class of bugs the project did not want in v1. Zero-filled bodies risk being compressed somewhere along the path and reporting a speed the link cannot deliver.
+**Decision.** Use random file-backed bodies with explicit content length. Fixture rungs include small bodies for slow links and remain bounded at 32 MiB. A smaller final budget reservation is sent at its exact size rather than rounded up. Prepare fixtures serially before the measured phase so file generation does not distort transfer timing. Files are cached by byte size under the application's upload cache directory.
 
-**Decision.** `UploadFixture` pre-generates files of 1, 4, 16 and 32 MiB (`rungs`) under `~/Library/Caches/com.srimi.internetspeedreader/upload/`, filled with `arc4random_buf`, and reuses a file whose size already matches. Each upload request uses `URLSession.upload(for:fromFile:delegate:)` with an explicit `Content-Length`. `rung(forPerStreamBytesPerSecond:)` picks the rung nearest two seconds of per-stream throughput, mirroring ADR-008.
+**Consequences.** The transport does not retain a whole upload body as request Data. Fixture generation still allocates its bounded file contents temporarily, and arbitrary final reservations can add cache files; do not claim a constant cache cap or flat measured memory use. Uninstall removes the cache.
 
-**Consequences.** Upload memory stays flat regardless of link speed. The fixtures occupy up to 53 MiB of cache, which `scripts/uninstall.sh` removes with the rest of the Caches folder. Random content means the fixture cannot be checked into the repository, so it is generated on first use, and `CloudflareSpeedTest` falls back to the temporary directory if the cache directory cannot be created.
-
-**Evidence.** `Sources/SpeedCore/SpeedTest/Cloudflare/UploadFixture.swift`, `Sources/SpeedCore/Support/AppPaths.swift`, `runUploadPhase` in `Sources/SpeedCore/SpeedTest/Cloudflare/CloudflareSpeedTest.swift`, `Tests/SpeedCoreTests/CloudflareDecodingTests.swift` (`UploadFixtureTests`). Critique, "missing" item 6.
+**Evidence.** `UploadFixture`, `DownloadStream` and fixture/reservation tests. Live resource measurements belong in the verification report.
 
 ---
 
-## ADR-013: Link-layer live meter and payload speed test kept separate and labelled
+## ADR-013: Keep actual interface traffic distinct from capacity tests
 
-**Context.** The menu bar reads kernel interface counters, which include TCP and IP headers, TLS records, ACKs, retransmits, and every application on the machine. The speed test counts only the payload bytes this app moved. The two numbers differ by construction. The research measured 11,744,062 interface bytes for a 10,000,000-byte payload (about 17%); the build measured 57,447,424 interface bytes for 52,428,800 payload bytes (9.6%), or 154.45 Mbps versus 140.96 Mbps.
+**Decision.** The bar and live panel show all-app traffic on the chosen interface, including protocol overhead, retransmissions and potentially local traffic. GO shows the test's validated payload capacity. Idle is a real near-zero download reading; missing/stale data shows `—`. Last-test timestamp/provider and quality remain separate from live readings.
 
-**Decision.** The bar shows link-layer throughput of one interface and says so: the tooltip in `StatusItemController.tooltip()` reads "Link-layer throughput, about 10 percent above payload" and names the interface and "all apps". The panel footer in `PanelView` states that test results measure payload only. The README has a table contrasting the two. The speed test reports payload Mbps. Neither number is adjusted toward the other, and counters are never used as an "internet is up" signal, because LAN traffic keeps flowing during a WAN outage.
+**Consequences.** There is no fixed percentage conversion and no reason to scale one number toward another. Protocol, route, background activity, timing and server differences all affect comparisons. Counters are never treated as proof of working internet, because LAN traffic can continue during a WAN outage.
 
-**Consequences.** Users will see the bar read higher than a test on the same link. That is documented rather than hidden. The bar answers "is my connection busy" and the test answers "how fast is my connection", and support questions about the gap can be answered by pointing at the label.
-
-**Evidence.** `Sources/App/StatusBar/StatusItemController.swift` (`tooltip`), `Sources/App/Popover/PanelView.swift` (`footer`), `README.md` ("What the numbers mean"). Session fact: 50 MiB validation on 2026-09-04. Research report, topic 3, verified item 9 and gotcha 14. Critique, "missing" item 7 and "risky" item 13.
+**Evidence.** Status-item/panel rendering, README, throughput freshness tests. Earlier overhead measurements illustrate particular runs only and are retained in the historical verification report.
 
 ---
 
@@ -201,7 +177,7 @@ Paths are relative to the repository root. Measurements are from one machine (ma
 
 **Decision.** `ConnectivityStateMachine` is a pure value type driven by events with `now` and `wallClock` passed in. Two consecutive probe failures (`failuresToConfirm = 2`) open an outage; one success closes it. The outage `start` is stamped at the first failure, not the confirming one, so the duration is honest. A `.satisfied` path only schedules a probe 300 ms later. An `.unsatisfied` path opens an outage after `pathDebounce = 3 s`. A captive portal is its own state with its own `OutageCause`. Probe cadence is 15 s online, 2 s while suspect or down, and 30 s after ten consecutive failures.
 
-**Consequences.** Detection of a hard outage takes two probe rounds, roughly four seconds at the degraded cadence. Recovery is immediate on the first success. Because the machine has no clocks or I/O, every rule is unit tested with a hand-driven clock in `ConnectivityStateMachineTests`, including the honest start stamp, the debounce, the captive portal state and the cadence backoff. `OutageEngine` only supplies time, probes, timers and the ledger.
+**Consequences.** Detection depends on the current probe cadence and each round deadline. Recovery occurs on the first successful probe. The pure state machine has hand-driven tests for the honest start stamp, debounce, captive portal state and cadence backoff. `OutageEngine` only supplies time, probes, timers and the ledger.
 
 **Evidence.** `Sources/SpeedCore/Outage/ConnectivityStateMachine.swift` (`Config`, `handlePath`, `handleProbe`), `Sources/SpeedCore/Outage/OutageEngine.swift`, `Tests/SpeedCoreTests/ConnectivityStateMachineTests.swift`. Research report, topic 3, "fromDocs" item 6 and gotcha 3 (satisfied path is not internet), recommendation section 3 (asymmetric hysteresis).
 
@@ -231,27 +207,25 @@ Paths are relative to the repository root. Measurements are from one machine (ma
 
 ---
 
-## ADR-017: Injected `TimeSource` and `withDeadline` around every network call
+## ADR-017: Measured monotonic time, cadence-aware freshness and live power updates
 
-**Context.** Throughput math divides by elapsed time. `Date` moves when NTP corrects the system clock, and timer coalescing plus App Nap make ticks land late by design, so assuming the nominal interval over-reports by the drift. Network calls on a blackholed route can hang indefinitely (ADR-016). Tests need to drive time by hand to exercise ten-second rules in milliseconds.
+**Decision.** Retain injected `TimeSource` and explicit deadlines. Live sampling defaults to one second while awake. Missing/unknown/legacy panel-only refresh preferences migrate to `always`; explicit battery reduction stays 1/2/5 seconds for AC/battery/Low Power Mode. Observe both power-source and Low Power Mode changes, and react to preference changes immediately.
 
-**Decision.** `TimeSource` provides a monotonic `now()` (`ContinuousClock.Instant`), a `wallClock()` for human-readable stamps, and `sleep(for:tolerance:)`. `SystemTimeSource` is the production implementation; tests inject a fast-forwarding clock. `withDeadline(_:clock:operation:)` races the operation against `clock.sleep` in a throwing task group and throws `DeadlineExceeded` if the timer wins. `ThroughputCalculator.evaluate` takes measured `elapsedSeconds`, refuses intervals under 0.2 s, and rebaselines on gaps over 5 s or rates over 50 Gbps. `LiveThroughputMonitor` sleeps with a 250 ms tolerance and the cadence comes from `PowerPolicy` (1 s on AC, 2 s on battery, 5 s in Low Power Mode).
+**Reason.** The v1.0 fixed five-second stale threshold rejected normal five-second low-power ticks after scheduling tolerance. The threshold is now `max(5, 3 × expectedIntervalSeconds)`; rates still divide by measured elapsed time. Missing counters and unexpected gaps publish unavailable state and recover with a fresh baseline.
 
-**Consequences.** Correctness never depends on cadence: a late tick reports the right number because the divisor is measured. App Nap only degrades cadence. `ProcessInfo.beginActivity` with `.userInitiatedAllowingIdleSystemSleep` is held for the app's lifetime as the documented App Nap opt-out, with `LSAppNapIsDisabled` in `Support/Info.plist` as belt and braces.
+**Consequences.** App Nap opt-out remains `.userInitiatedAllowingIdleSystemSleep`, with the plist backup; normal sleep is allowed. Sleep/wake/network changes clear display history. The status refresh checks freshness independently. Neither panel visibility nor GO controls sampling.
 
-**Evidence.** `Sources/SpeedCore/Support/TimeSource.swift`, `Sources/SpeedCore/Support/Deadline.swift`, `Sources/SpeedCore/Counters/ThroughputSampler.swift`, `Sources/SpeedCore/Counters/LiveThroughputMonitor.swift`, `Sources/App/PowerPolicy.swift`, `Sources/App/AppCoordinator.swift` (`beginActivity`). `Tests/SpeedCoreTests/ThroughputCalculatorTests.swift` (`usesMeasuredElapsedTime`), `FastClock` in `Tests/SpeedCoreTests/OutageEngineTests.swift`. Research report, topic 3, gotchas 8 and 13.
+**Evidence.** `ThroughputCalculator`, `LiveThroughputMonitor`, `LiveRefreshPolicy`, `PowerPolicyObserver` and fake-clock/counter tests, including the reproduced 5.25-second regression. See current verification for installed behavior.
 
 ---
 
-## ADR-018: One adaptive number in the bar: 1.3x dominance, 0.15 Mbps floor, 3 s dwell
+## ADR-018: Sustained upload priority, with an explicit control-packet heuristic
 
-**Context.** After using the two-line layout, the user chose a single number that follows the traffic. Download is what most traffic is and what people mean by "my speed", so it is the resting state. During any mixed transfer the quiet direction is still non-zero because of ACKs, and a naive "show the larger one" would flip between arrows several times a second, which is unreadable.
+**Decision.** The adaptive bar rests on download. Activity is estimated from transmitted bytes beyond 160 bytes per transmitted packet, using measured elapsed time. Enter upload at 0.15 Mbps for 2 seconds, exit below 0.075 Mbps for 3 seconds, and return to download immediately when both raw directions are below 0.15 Mbps. Upload need not dominate a concurrent download.
 
-**Decision.** `ActiveDirectionSelector.update` rests on `.download`; it switches to `.upload` only when upload exceeds download by `dominanceRatio = 1.3` and the larger of the two is at least `floorMbps = 0.15`. Once a direction wins it holds for `dwellSeconds = 3.0`. `AppCoordinator.ingest` feeds the selector the raw sample rather than the smoothed value so it reacts the moment a transfer starts, while the displayed number is a 0.5 exponential average. `BarLayout.adaptive` is the default; two-line, one-line and dot-only remain selectable in Settings for crowded or notched menu bars.
+**Consequences.** The allowance only classifies direction; displayed Mbps remains the measured byte rate. This cannot perfectly identify upload intent: many ACKs can hide a small simultaneous upload, and VPN/QUIC/offload behavior can affect it. Both directions remain visible in the panel. A measured-time smoother uses a one-second half-life, snaps idle/background values to their raw reading and resets on lifecycle changes.
 
-**Consequences.** The readout can be up to three seconds stale about direction during an alternating transfer; the test `mixedTrafficSettles` bounds twenty seconds of alternating traffic to at most seven switches. Accessibility text reports "Uploading at" or "Downloading at" so VoiceOver users know which direction is shown.
-
-**Evidence.** `Sources/SpeedCore/Counters/ActiveDirectionSelector.swift`, `Sources/App/AppCoordinator.swift` (`ingest`), `Sources/App/StatusBar/StatusItemView.swift` (`BarLayout`, `updateAccessibility`), `Tests/SpeedCoreTests/ActiveDirectionSelectorTests.swift`. Session fact: user decision recorded as "single adaptive number (download by default, upload only while uploading; 1.3x dominance, 0.15 Mbps floor, 3 s dwell)"; commit "adaptive number + login default".
+**Evidence.** `ActiveDirectionSelector`, `ThroughputSmoother`, packet-counter/parser tests and direction tests. This replaces v1.0's 1.3× dominance rule and fixed three-second dwell.
 
 ---
 
@@ -291,35 +265,46 @@ Paths are relative to the repository root. Measurements are from one machine (ma
 
 ---
 
-## ADR-022: Versioned atomic JSON files for history and the outage log
+## ADR-022: Versioned atomic history with additive method metadata
 
-**Context.** Speed test history and the outage log must survive relaunches and schema changes without ever crashing at launch. The critique flagged that SwiftData's `ModelContext` is not `Sendable`, which fights Swift 6 language mode, and that an LSUIElement app has no natural `.modelContainer` scene path. `UserDefaults` grows unbounded and is the wrong place for a list.
+**Decision.** Keep atomic JSON envelope version 1 and the same bundle-keyed storage paths: `speedtests.json` (cap 200) and `outages.json` (cap 500). Add optional `methodologyVersion`, `downloadQuality` and `uploadQuality` to `SpeedTestResult`. Older records decode with nil metadata and remain labelled as earlier Cloudflare measurements; new results use method 2. Apple extras remain separate.
 
-**Decision.** `AtomicJSONStore<Record>` writes a `{version, records}` envelope with `Data.write(options: .atomic)`, ISO 8601 dates and sorted keys, and caps the list. On load, an unknown version or a decode failure moves the file aside to `.bak` and starts fresh. `outages.json` (cap 500) and `speedtests.json` (cap 200) live under `~/Library/Application Support/com.srimi.internetspeedreader/`. Both `OutageRecord` and `SpeedTestResult` carry a `schemaVersion` field. The bundle identifier never changes because notifications, the login item, the heartbeat key and these paths all key off it.
+**Consequences.** No destructive history migration is required. Unknown envelope versions or genuinely invalid JSON still move aside to `.bak`. Only a successful current run writes a result; cancellation/interruption preserves the previous result and history.
 
-**Consequences.** There is no migration code in v1; an incompatible file is preserved as `.bak` rather than parsed. `scripts/uninstall.sh` deletes the directory. The store is a plain struct usable from the nonisolated `SpeedCore` target and from tests with a temporary directory.
-
-**Evidence.** `Sources/SpeedCore/Support/AtomicJSONStore.swift`, `Sources/SpeedCore/Support/AppPaths.swift`, `OutageLedger.makeDefault` in `Sources/SpeedCore/Outage/OutageLedger.swift`, `SpeedTestController.init` in `Sources/App/SpeedTestController.swift`, `Tests/SpeedCoreTests/OutageLedgerTests.swift` (`unknownVersionMovedAside`, `persistsAcrossReload`). Critique, "missing" item 9.
+**Evidence.** `AtomicJSONStore`, `SpeedTestResult`, `SpeedTestController`, legacy decoding/persistence tests and run-gate tests.
 
 ---
 
-## ADR-023: Apple Development identity, team LOCAL_TEAM_ID, sandbox off, hardened runtime on, no notarisation
+## ADR-023: Local signing configuration and public build privacy
 
-**Context.** Notifications and `SMAppService` key off the code signature. An ad-hoc signature's designated requirement includes the `cdhash`, which changes on every rebuild, so the critique warned that grants would be silently dropped after each reinstall. The only signing identity on the machine is `-`; there is no Developer ID, so notarisation is not possible. App Sandbox buys nothing for a locally installed utility and the sandbox-versus-`Process()` question was contested in the research. Notarisation requires hardened runtime, so turning it off would foreclose that path later.
+**Context.** macOS notifications and login registration depend on code identity. A
+stable developer signature can preserve permissions across rebuilds, but certificates
+also disclose the certificate holder's identity and team. Those details do not belong
+in public source or a privacy-preserving development artifact.
 
-**Decision.** `project.yml` sets `CODE_SIGN_STYLE: Manual`, `CODE_SIGN_IDENTITY: "-"`, `DEVELOPMENT_TEAM: LOCAL_TEAM_ID`, `ENABLE_HARDENED_RUNTIME: YES`, `ENABLE_APP_SANDBOX: NO` on the app target, and no entitlements block. `scripts/make-dmg.sh` re-signs the staged app with `--options runtime --timestamp=none` and verifies with `codesign --verify --strict`. The test bundle signs ad-hoc (`"-"`) with hardened runtime off. Nothing is notarised in v1.
+**Decision.** Keep personal signing configuration in untracked local overrides. Public
+source must build without a contributor's certificate. A distributable Developer ID
+release requires explicit signing and notarization by its publisher; passing a local
+build is not evidence of either. Historical v1.0/v1.1 local installations used a
+personal development certificate, and that original binary must be reviewed before
+public distribution. The app target has App Sandbox disabled; hardened runtime is
+used with developer signing. This enables the optional Apple subprocess test.
 
-**Consequences.** A team-anchored designated requirement survives rebuilds, which is why the login item still read `enabled` after two reinstalls. The same argument should hold for the notification grant, but that was never tested: Allow was not clicked during the 1.0.0 session, so notification-grant persistence is unverified. On another Mac the first launch is blocked by Gatekeeper; the DMG's "READ ME FIRST.txt" and the README give the right-click Open workaround and the `xattr -dr com.apple.quarantine` command. The certificate is an Apple Development certificate and will expire; the documented fallback is ad-hoc signing with hardened runtime off and re-granted permissions. Deviation: the plan set `DEVELOPMENT_TEAM: LOCAL_CERT_ID`; that string is the identity's certificate identifier, not the team. The team is the certificate's OU, `LOCAL_TEAM_ID`, and the build failed until the setting was corrected.
+**Consequences.** An ad-hoc build does not identify the developer and may require macOS
+permissions to be granted again after replacement. Certificate private keys,
+provisioning profiles and credentials must never be committed. Use the certificate's
+OU for a local team setting, rather than confusing it with the CN suffix.
 
-**Evidence.** `project.yml`, `scripts/make-dmg.sh`, `scripts/install.sh`. Session facts: signing identity and real team ID; bug 3; the notification prompt appeared from the installed build. Critique, "risky" items 1, 2 and 11. Research report, topic 2, verified items 14 and 16.
-
----
+**Evidence.** `project.yml`, packaging scripts, the installed-app checks summarized in
+[current verification](VERIFICATION-1.1.md), and the signing behavior observed during
+the original release. Notification permission persistence and first launch on a
+second Mac remain separate verification tasks.
 
 ## ADR-024: Deployment target macOS 14
 
 **Context.** The app needs `NSApp.activate()` (macOS 14) to front Settings and About from an accessory app without the deprecated `activateIgnoringOtherApps`, the `@Observable` macro (macOS 14) for its models, `.contentTransition(.numericText())` on the readouts, `SMAppService` (macOS 13), and `OSAllocatedUnfairLock` (macOS 13). The two `LSUIElement` apps already installed on the development machine both ship `LSMinimumSystemVersion = 14.0`. Going to macOS 26 would gain `NWPath.linkQuality` and Liquid Glass but cut off users for no feature this app needs.
 
-**Decision.** `project.yml` sets `MACOSX_DEPLOYMENT_TARGET: "14.0"` and `Support/Info.plist` sets `LSMinimumSystemVersion` to 14.0. No macOS 26-only API is used. `AppCoordinator.openSettings` guards `showSettingsWindow:` with `#available(macOS 14.0, *)`, which is redundant at this target but harmless.
+**Decision.** `project.yml` sets `MACOSX_DEPLOYMENT_TARGET: "14.0"` and `Support/Info.plist` sets `LSMinimumSystemVersion` to 14.0. No macOS 26-only API is used. `AppCoordinator.openSettings` presents a retained native `SettingsWindowController` hosting the SwiftUI settings view. The panel, context menu and Cmd+, share that window; the removed `showSettingsWindow:` selector no longer opens SwiftUI Settings on current macOS.
 
 **Consequences.** The app runs on macOS 14 and later. The SDK is 26.5 and the host is 26.6.2, so any future use of a symbol gated above 14.0 must be wrapped in `#available`. Deviation: the plan mentioned `.glassEffect` under an availability check for the panel background; the code does not use it.
 
@@ -333,7 +318,7 @@ Paths are relative to the repository root. Measurements are from one machine (ma
 
 **Decision.** `SWIFT_VERSION: "6.0"` for every target. `SpeedCore` (a static library) sets `SWIFT_DEFAULT_ACTOR_ISOLATION: nonisolated`, the app sets `MainActor`, and `SpeedCoreTests` sets `nonisolated`. The test bundle depends only on `SpeedCore` and has no `TEST_HOST`, so `xcodebuild test` never launches the menu bar agent. Isolation crossing happens only through `await` on `SpeedCore` async APIs and `AsyncStream` consumption in `AppCoordinator`. Several app classes carry an explicit `@MainActor` as belt and braces; `AppCoordinator`, `AppDelegate` and `StatusItemView` rely on the target default.
 
-**Consequences.** The flag never appears in the `xcodebuild` log, so the plan's "grep the log" check could not work. It was proven empirically instead: a probe that calls a `@MainActor` function synchronously compiles in the app target and fails in `SpeedCore` with "call to main actor-isolated global function in a synchronous nonisolated context". `ENABLE_USER_SCRIPT_SANDBOXING: YES` blocked the static library's Objective-C header copy phase, so `SpeedCore` sets `SWIFT_INSTALL_OBJC_HEADER: NO` and an empty `SWIFT_OBJC_INTERFACE_HEADER_NAME`. Unit tests: 75 passing in 16 suites with no network.
+**Consequences.** The flag never appears in the `xcodebuild` log, so the plan's "grep the log" check could not work. It was proven empirically instead: a probe that calls a `@MainActor` function synchronously compiles in the app target and fails in `SpeedCore` with "call to main actor-isolated global function in a synchronous nonisolated context". `ENABLE_USER_SCRIPT_SANDBOXING: YES` blocked the static library's Objective-C header copy phase, so `SpeedCore` sets `SWIFT_INSTALL_OBJC_HEADER: NO` and an empty `SWIFT_OBJC_INTERFACE_HEADER_NAME`. Historical v1.0 test counts are recorded in `VERIFICATION.md`; current outcomes are recorded in `VERIFICATION-1.1.md`.
 
 **Evidence.** `project.yml`, `Sources/App/AppCoordinator.swift`, `Sources/SpeedCore/SpeedTest/Cloudflare/DownloadStream.swift` (`@unchecked Sendable` lock-guarded delegate), `Sources/SpeedCore/Outage/OutageEngine.swift` (actor). Session facts: the isolation proof; bug 4; test counts. Research report, topic 2, verified item 20 and gotcha 19.
 
@@ -341,7 +326,7 @@ Paths are relative to the repository root. Measurements are from one machine (ma
 
 ## ADR-026: Repository inside iCloud Drive, build products outside it
 
-**Context.** A working copy may be inside iCloud Drive and contain spaces. iCloud's file provider tags files with extended attributes (`com.apple.fileprovider.fpfs#P`, `com.apple.FinderInfo`), evicts files, and leaves `.icloud` placeholders. During the build, staging the DMG inside the repository baked those attributes into the image, and `codesign --verify` rejected the installed app with "resource fork, Finder information, or similar detritus not allowed".
+**Context.** A checkout may live inside iCloud Drive and contain spaces. iCloud's file provider tags files with extended attributes (`com.apple.fileprovider.fpfs#P`, `com.apple.FinderInfo`), evicts files, and leaves `.icloud` placeholders. During the build, staging the DMG inside the repository baked those attributes into the image, and `codesign --verify` rejected the installed app with "resource fork, Finder information, or similar detritus not allowed".
 
 **Decision.** DerivedData defaults to `$HOME/Library/Developer/Xcode/DerivedData/InternetSpeedReader` in both scripts (`DD` variable), outside iCloud. The generated `InternetSpeedReader.xcodeproj` is git-ignored and regenerated with `xcodegen generate --spec project.yml`. `.gitignore` also excludes `dist/`, `build/`, `*.icloud`, `*.nosync/` and `._*`. The DMG is staged in `mktemp -d` under `$TMPDIR`, copied with `ditto --noextattr --noqtn`, stripped with `xattr -cr`, and re-signed before imaging. Every path in the scripts is quoted.
 
@@ -355,7 +340,7 @@ Paths are relative to the repository root. Measurements are from one machine (ma
 
 **Context.** v1.0.0 ships as a drag-to-install disk image. `hdiutil` is present on every Mac; `create-dmg` is not installed and is not needed. The image must contain a signed app whose signature still verifies after Finder copies it to `/Applications`, plus a first-launch note because the build is not notarised.
 
-**Decision.** `scripts/make-dmg.sh` regenerates the project, builds Release, copies the app into the temporary staging folder, adds a symbolic link to `/Applications` and a "READ ME FIRST.txt" with the Gatekeeper workaround, strips extended attributes, re-signs with the Apple Development identity using `--options runtime --timestamp=none`, verifies strictly, then runs `hdiutil create -volname "Internet Speed Reader" -srcfolder "$STAGING" -ov -format UDZO -fs APFS`. It verifies the image with `hdiutil verify`, signs the image with the same identity on a best-effort basis, and prints the size and SHA-256. The version comes from `MARKETING_VERSION` in `project.yml`, giving `dist/InternetSpeedReader-1.0.0.dmg`.
+**Decision.** `scripts/make-dmg.sh` regenerates the project, builds Release, copies the app into the temporary staging folder, adds a symbolic link to `/Applications` and a "READ ME FIRST.txt" with the Gatekeeper workaround, strips extended attributes, re-signs with the Apple Development identity using `--options runtime --timestamp=none`, verifies strictly, then runs `hdiutil create -volname "Internet Speed Reader" -srcfolder "$STAGING" -ov -format UDZO -fs APFS`. It verifies the image with `hdiutil verify`, signs the image with the same identity on a best-effort basis, and prints the size and SHA-256. The version comes from `MARKETING_VERSION` in `project.yml`, giving `dist/InternetSpeedReader-<version>.dmg`.
 
 **Consequences.** The image is compressed and read only. The README and the in-image note both tell users on other Macs to right-click Open once or remove the quarantine attribute. Deviation: the plan specified `-fs HFS+`; the script uses APFS. Deviation: the plan's optional Finder window layout with a background image was not done.
 
@@ -363,7 +348,19 @@ Paths are relative to the repository root. Measurements are from one machine (ma
 
 ---
 
-## Rejected alternatives
+## ADR-028: Own cancellation through cleanup and reject stale callbacks
+
+**Decision.** `SpeedTestRunGate` owns a UUID until transport cleanup and lifecycle restoration finish. Stop is a visible busy state. Late/wrong-run progress is rejected, phase progress cannot move backwards, and 30-second monotonic spacing starts at completion. Cloudflare-only rate limiting does not permanently block the Apple alternative.
+
+**Consequences.** The controller saves only successful, current results. Sleep and meaningful native path changes interrupt tests. `measuringCapacity` controls the testing indicator separately from cleanup ownership, and completion requests an independent uncancelled connectivity probe rather than announcing success as online. The Apple runner joins termination/pipe cleanup, escalates after two seconds and rejects malformed, partial, abnormal-exit or cancelled output.
+
+**Evidence.** `SpeedTestController`, `SpeedTestRunGate`, `AppCoordinator`, `NetworkQualityRunner`, injected process/deadline tests and transport cancellation tests. Current verification records actual end-to-end outcomes.
+
+---
+
+## Historical alternatives considered
+
+These summarize the original selection context, not newly verified provider terms or platform guarantees. Current choices are stated in the records above.
 
 | Alternative | Rejected because | What was chosen instead |
 |---|---|---|
@@ -378,14 +375,14 @@ Paths are relative to the repository root. Measurements are from one machine (ma
 | Summing all interfaces | Counts `awdl0`, `lo0` and VPN double-counting | One selected interface (ADR-004) |
 | One shared `URLSession` for all streams | Six-connection default and HTTP/2 coalescing collapse the streams | One session per stream (ADR-005) |
 | `URLSession.data(for:delegate:)` for downloads | Never calls `didReceive data` on a task delegate; counted 0 bytes | Session-level delegate (ADR-006) |
-| Percentile or average of per-request rates | Under-reports by roughly the stream count | Sum into one ledger on one clock (ADR-007) |
+| Percentile or average of per-request rates | Under-reports by roughly the stream count | Confirmed payload on one timeline (ADR-007) |
 | Chunk size divided by stream count | Requests finish too fast; fast links read low | Per-stream sizing, two seconds per request (ADR-008) |
 | Raw time-to-first-byte as ping | Inflated by worker cold starts, 213 to 793 ms in research | Subtract `Server-Timing` (ADR-010) |
 | Subtracting server time from throughput | Throughput is bytes over a timeline, not per-request duration | Latency only (ADR-010) |
 | `cfL4` `lost` and `retrans` as packet loss | Zero on healthy and mildly lossy links alike | Not shown |
 | Accepting any 200 as download bytes | A captive portal's HTML would be measured as speed | Hard abort on validation failure (ADR-011) |
 | In-memory `Data` upload bodies | Whole body held in RAM | File-backed fixtures (ADR-012) |
-| Custom `InputStream` upload body | More code and bug surface than v1 needed | `upload(for:fromFile:)` (ADR-012) |
+| Custom `InputStream` upload body | More code and bug surface than v1 needed | Session-level file-backed upload delegate (ADR-012) |
 | Reconciling the live meter to the speed test | They measure different layers | Separate, labelled numbers (ADR-013) |
 | Counters as an "internet is up" signal | LAN traffic flows during WAN outages | Active HTTP probe (ADR-014, ADR-016) |
 | Trusting a satisfied `NWPath` | A captive portal satisfies the path | Probe on every satisfied path (ADR-014) |
@@ -393,7 +390,7 @@ Paths are relative to the repository root. Measurements are from one machine (ma
 | Probing the default gateway | Local-network traffic, triggers the privacy prompt | Off-subnet endpoints only (ADR-016) |
 | `Date` for elapsed time | Moves on NTP correction | `ContinuousClock` via `TimeSource` (ADR-017) |
 | Dividing by the nominal tick interval | Coalesced timers land late and over-report | Measured elapsed time (ADR-017) |
-| Showing the larger of download and upload each tick | Flips several times a second on mixed traffic | Dominance ratio, floor and dwell (ADR-018) |
+| Showing the larger of download and upload each tick | Flips several times a second on mixed traffic | Sustained upload activity and hysteresis (ADR-018) |
 | Banker's rounding in the bar | 84.25 read as "84.2" | Half-up rounding (ADR-019) |
 | `.timeSensitive` or `.criticalAlert` notifications | Require Apple-granted entitlements | `.active`, alert only, no sound (ADR-020) |
 | Registering the login item once on first run | `.notFound` after the next reinstall | Reconcile every launch against a preference (ADR-021) |
@@ -409,18 +406,18 @@ Paths are relative to the repository root. Measurements are from one machine (ma
 | `-fs HFS+` disk image | Not needed on macOS 14 and later | APFS (ADR-027) |
 | Scheduled tests, global hotkey, auto-update | Out of scope for v1 by user decision | On-demand tests only |
 
-## Deviations from the approved plan, collected
+## Historical-plan differences still relevant
 
 | Plan said | Code does | Record |
 |---|---|---|
-| `DEVELOPMENT_TEAM: LOCAL_CERT_ID` | `DEVELOPMENT_TEAM: LOCAL_TEAM_ID`; LOCAL_CERT_ID is the certificate identifier | ADR-023 |
+| Confusing certificate identifier with team ID | Supply the certificate OU as the local team override | ADR-023 |
 | Verify the isolation flag by grepping the build log | Proven by a compile probe; the flag never appears in the log | ADR-025 |
 | No mention of `ENABLE_USER_SCRIPT_SANDBOXING` | Set to YES, with `SWIFT_INSTALL_OBJC_HEADER: NO` on `SpeedCore` | ADR-025 |
 | Stage the DMG in `build/dmg`, `-fs HFS+` | Stage in `mktemp -d` outside iCloud, `-fs APFS`, `ditto --noextattr`, `xattr -cr`, re-sign | ADR-026, ADR-027 |
 | ISP fallback chain: `/meta`, `__down` headers, Apple `nq`, "Unknown ISP" | `/meta` then "Unknown ISP" | ADR-002 |
 | Loaded latency sampled during throughput phases | Fields exist in `SpeedTestResult`; never populated | ADR-002 |
-| 15 min, 1 h, 6 h backoff on 403 or 429 | Single 15 minute block | ADR-002 |
-| One halving retry on a byte-cap 403 | Classified as `.byteCapExceeded`, not retried; clamp makes it unreachable | ADR-008 |
+| 15 min, 1 h, 6 h backoff on 403 or 429 | Single 15 minute block for HTTP 429; HTTP 403 is an explicit refusal | ADR-002 |
+| One halving retry on a byte-cap 403 | One-byte HTTP 403 retains the legacy `.byteCapExceeded` name; cause unknown, surfaced as HTTP 403, not retried or mislabeled as a rate limit | ADR-008 |
 | Two-line layout as the default | Adaptive single number as the default | ADR-018 |
 | Login item registered on demand | Reconciled against `launchAtLoginWanted` (default true) on every launch | ADR-021 |
 | Liquid Glass panel background under `#available(macOS 26)` | Not used | ADR-024 |

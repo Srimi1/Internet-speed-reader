@@ -1,26 +1,46 @@
 import Foundation
-import os
 
-/// Counts upload bytes as they are handed to the socket.
-final class UploadStreamDelegate: NSObject, URLSessionTaskDelegate, Sendable {
-    private let ledger: ByteLedger
-    private let lastReported = OSAllocatedUnfairLock(initialState: Int64(0))
+/// Injectable at the transport boundary: engine tests never need a network or app host.
+protocol CloudflareTransport: Sendable {
+    func data(for request: URLRequest, timeoutSeconds: Double) async throws -> (Data, HTTPURLResponse)
+    func makeStream(timeoutSeconds: Double) -> any SpeedTestStream
+}
 
-    init(ledger: ByteLedger) { self.ledger = ledger }
+protocol SpeedTestStream: Sendable {
+    func download(bytes: Int, nonce: String, progress: @escaping @Sendable (Int) -> Void) async throws -> TransferReceipt
+    func upload(bytes: Int, file: URL, progress: @escaping @Sendable (Int) -> Void) async throws -> TransferReceipt
+    func invalidate()
+}
 
-    func urlSession(
-        _ session: URLSession,
-        task: URLSessionTask,
-        didSendBodyData bytesSent: Int64,
-        totalBytesSent: Int64,
-        totalBytesExpectedToSend: Int64
-    ) {
-        // Report the delta so restarts or retries cannot double count.
-        let delta = lastReported.withLock { previous -> Int64 in
-            let change = totalBytesSent - previous
-            previous = totalBytesSent
-            return change
+struct TransferReceipt: Sendable {
+    let bytes: Int
+    let networkProtocol: String?
+}
+
+final class URLSessionCloudflareTransport: CloudflareTransport, @unchecked Sendable {
+    let configuration: @Sendable (Double) -> URLSessionConfiguration
+    private let controlSession: URLSession
+
+    init(configuration: @escaping @Sendable (Double) -> URLSessionConfiguration = CloudflareSpeedTest.makeSessionConfiguration) {
+        self.configuration = configuration
+        // Latency samples must reuse a connection; a fresh session per sample would
+        // charge DNS/TCP/TLS setup on every request and could never measure warm RTT.
+        self.controlSession = URLSession(configuration: configuration(5))
+    }
+
+    deinit { controlSession.invalidateAndCancel() }
+
+    func data(for request: URLRequest, timeoutSeconds: Double) async throws -> (Data, HTTPURLResponse) {
+        var request = request
+        request.timeoutInterval = timeoutSeconds
+        let (data, response) = try await controlSession.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw SpeedTestError.interception("non-HTTP response")
         }
-        if delta > 0 { ledger.add(Int(delta)) }
+        return (data, http)
+    }
+
+    func makeStream(timeoutSeconds: Double) -> any SpeedTestStream {
+        DownloadStream(configuration: configuration(timeoutSeconds))
     }
 }

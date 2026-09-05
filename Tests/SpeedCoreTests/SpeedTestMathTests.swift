@@ -57,7 +57,7 @@ struct ChunkLadderTests {
         #expect(ladder.size(forPerStreamBytesPerSecond: 1_000) == ChunkLadder.minBytes)
     }
 
-    @Test("An unknown rate starts with the 1 MiB probe")
+    @Test("An unknown rate starts with the small initial probe")
     func firstProbe() {
         #expect(ladder.size(forPerStreamBytesPerSecond: 0) == ChunkLadder.firstProbeBytes)
     }
@@ -67,54 +67,65 @@ struct ChunkLadderTests {
 struct ThroughputAggregatorTests {
     let aggregator = ThroughputAggregator()
 
-    /// A ramp from zero to 100 Mbps over 1.5 s, then steady 100 Mbps.
-    private func rampThenSteady(steadySlices: Int = 60) -> [ThroughputSlice] {
-        var slices: [ThroughputSlice] = []
-        for step in 0..<15 {
-            let t = Double(step) * 0.1
-            slices.append(ThroughputSlice(mbps: 100 * (t / 1.5), secondsSincePhaseStart: t))
+    private func constant(_ rate: Double, seconds: Int = 6) -> [ThroughputSlice] {
+        (1...(seconds * 10)).map {
+            ThroughputSlice(mbps: rate, secondsSincePhaseStart: Double($0) / 10)
         }
-        for step in 0..<steadySlices {
-            let t = 1.5 + Double(step) * 0.1
-            slices.append(ThroughputSlice(mbps: 100, secondsSincePhaseStart: t))
-        }
-        return slices
     }
 
-    @Test("The warm-up ramp is discarded, so the headline reflects steady state")
+    @Test("Warm-up is excluded and steady payload is measured over actual time")
     func discardsWarmUp() throws {
-        let summary = try aggregator.summarize(rampThenSteady(), totalBytes: 100_000_000, totalSeconds: 7.5)
-        // Without the warm-up discard the ramp would drag this well below 100.
-        #expect(abs(summary.mbps - 100) < 0.5)
+        var slices = constant(100)
+        for index in 0..<15 { slices[index] = ThroughputSlice(mbps: 0, secondsSincePhaseStart: Double(index + 1) / 10) }
+        let summary = try aggregator.summarize(slices, totalBytes: 56_250_000, totalSeconds: 6)
+        #expect(abs(summary.mbps - 100) < 0.001)
+        #expect(abs(summary.meanMbps - 75) < 0.001)
         #expect(summary.quality == .good)
     }
 
-    @Test("A brief stall is trimmed away rather than halving the result")
-    func trimsStalls() throws {
-        var slices = rampThenSteady()
-        for index in 20..<28 { slices[index] = ThroughputSlice(mbps: 2, secondsSincePhaseStart: slices[index].secondsSincePhaseStart) }
-        let summary = try aggregator.summarize(slices, totalBytes: 90_000_000, totalSeconds: 7.5)
-        #expect(summary.mbps > 90, "a short stall should not dominate the headline")
+    @Test("Real stalls lower delivered throughput and flag variable measurements")
+    func retainsStalls() throws {
+        var slices = constant(100)
+        for index in 25..<35 { slices[index] = ThroughputSlice(mbps: 0, secondsSincePhaseStart: Double(index + 1) / 10) }
+        let summary = try aggregator.summarize(slices, totalBytes: 62_500_000, totalSeconds: 6)
+        #expect(abs(summary.mbps - 100 * 3.5 / 4.5) < 0.001)
+        #expect(summary.quality == .variable)
     }
 
-    @Test("The byte-weighted mean is reported alongside, as an untrimmed cross-check")
-    func reportsMean() throws {
-        let summary = try aggregator.summarize(rampThenSteady(), totalBytes: 93_750_000, totalSeconds: 7.5)
-        #expect(abs(summary.meanMbps - 100) < 0.5)
+    @Test("Unequal callback intervals are time-weighted, not averaged by sample count")
+    func irregularIntervals() throws {
+        let slices = [
+            ThroughputSlice(mbps: 10, secondsSincePhaseStart: 1.6, durationSeconds: 0.1),
+            ThroughputSlice(mbps: 100, secondsSincePhaseStart: 2.5, durationSeconds: 0.9)
+        ]
+        let summary = try aggregator.summarize(slices, totalBytes: 11_375_000, totalSeconds: 2.5)
+        #expect(abs(summary.mbps - 91) < 0.001)
+        #expect(summary.quality == .shortSample)
     }
 
-    @Test("Too few slices is an error, not a confidently wrong number")
+    @Test("An interval crossing warm-up contributes only its measured portion")
+    func warmUpBoundary() throws {
+        let slices = [ThroughputSlice(mbps: 80, secondsSincePhaseStart: 3, durationSeconds: 3)]
+        let summary = try aggregator.summarize(slices, totalBytes: 30_000_000, totalSeconds: 3)
+        #expect(abs(summary.mbps - 80) < 0.001)
+        #expect(summary.quality == .shortSample)
+    }
+
+    @Test("Zero bytes and too little post-warm-up time never become successful results")
     func insufficientData() {
-        let slices = (0..<4).map { ThroughputSlice(mbps: 50, secondsSincePhaseStart: Double($0) * 0.1) }
         #expect(throws: ThroughputAggregationError.self) {
-            try aggregator.summarize(slices, totalBytes: 1000, totalSeconds: 0.4)
+            try aggregator.summarize(constant(0), totalBytes: 0, totalSeconds: 6)
+        }
+        #expect(throws: ThroughputAggregationError.self) {
+            try aggregator.summarize(constant(50, seconds: 2), totalBytes: 1000, totalSeconds: 2)
         }
     }
 
-    @Test("A short phase still reports, but is flagged as a rough sample")
-    func shortSampleFlag() throws {
-        let summary = try aggregator.summarize(rampThenSteady(steadySlices: 12), totalBytes: 20_000_000, totalSeconds: 2.7)
-        #expect(summary.quality == .shortSample)
+    @Test("Cap-limited and incomplete measurements carry explicit quality")
+    func qualityFlags() throws {
+        let slices = constant(100)
+        #expect(try aggregator.summarize(slices, totalBytes: 75_000_000, totalSeconds: 6, dataLimited: true).quality == .dataLimited)
+        #expect(try aggregator.summarize(slices, totalBytes: 75_000_000, totalSeconds: 6, incomplete: true).quality == .incomplete)
     }
 }
 

@@ -7,13 +7,14 @@ private struct MessageBuilder {
     var bytes: [UInt8] = []
 
     /// Appends a real if_msghdr2 record carrying the given counters.
-    mutating func addInterface(index: Int, rx: UInt64, tx: UInt64) {
+    mutating func addInterface(index: Int, rx: UInt64, tx: UInt64, txPackets: UInt64 = 0) {
         var header = if_msghdr2()
         header.ifm_msglen = UInt16(MemoryLayout<if_msghdr2>.size)
         header.ifm_type = UInt8(RTM_IFINFO2)
         header.ifm_index = UInt16(index)
         header.ifm_data.ifi_ibytes = rx
         header.ifm_data.ifi_obytes = tx
+        header.ifm_data.ifi_opackets = txPackets
         append(&header, length: MemoryLayout<if_msghdr2>.size)
     }
 
@@ -55,11 +56,12 @@ struct RouteMessageParserTests {
         var builder = MessageBuilder()
         // The exact value observed on the development machine, which the 32-bit API
         // under-reported by precisely 2^32.
-        builder.addInterface(index: 11, rx: 6_082_856_020, tx: 1_805_371_232)
+        builder.addInterface(index: 11, rx: 6_082_856_020, tx: 1_805_371_232, txPackets: 5_000_000_000)
 
         let parsed = builder.parse()
         #expect(parsed[11]?.rx == 6_082_856_020)
         #expect(parsed[11]?.tx == 1_805_371_232)
+        #expect(parsed[11]?.txPackets == 5_000_000_000)
         #expect(parsed[11]!.rx > UInt64(UInt32.max))
     }
 

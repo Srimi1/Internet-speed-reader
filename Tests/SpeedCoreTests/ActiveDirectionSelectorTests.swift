@@ -17,55 +17,80 @@ struct ActiveDirectionSelectorTests {
     @Test("A download keeps the download reading")
     func downloadStays() {
         var selector = ActiveDirectionSelector()
-        #expect(selector.update(downMbps: 120, upMbps: 1.2, now: start) == .download)
+        let now = start
+        for second in 0...5 {
+            #expect(selector.update(
+                downMbps: 120, upMbps: 1.2, uploadActivityMbps: 0,
+                now: now.advanced(by: .seconds(second))
+            ) == .download)
+        }
     }
 
-    @Test("A real upload takes over the display")
+    @Test("A sustained upload takes priority even when a download is faster")
     func uploadTakesOver() {
         var selector = ActiveDirectionSelector()
         let now = start
-        #expect(selector.update(downMbps: 0.8, upMbps: 45, now: now) == .upload)
+        #expect(selector.update(downMbps: 100, upMbps: 1, uploadActivityMbps: 0.8, now: now) == .download)
+        #expect(selector.update(downMbps: 100, upMbps: 1, uploadActivityMbps: 0.8,
+                                now: now.advanced(by: .seconds(1))) == .download)
+        #expect(selector.update(downMbps: 100, upMbps: 1, uploadActivityMbps: 0.8,
+                                now: now.advanced(by: .seconds(2))) == .upload)
     }
 
-    @Test("Upload must clearly dominate, not merely edge ahead")
-    func needsClearDominance() {
+    @Test("Short upload bursts never take the display")
+    func shortBurstIgnored() {
         var selector = ActiveDirectionSelector()
-        // Upload is ahead, but only slightly: not worth changing what the user reads.
-        #expect(selector.update(downMbps: 10, upMbps: 11, now: start) == .download)
+        let now = start
+        #expect(selector.update(downMbps: 1, upMbps: 40, now: now) == .download)
+        #expect(selector.update(downMbps: 1, upMbps: 0.01,
+                                now: now.advanced(by: .seconds(1))) == .download)
+        #expect(selector.update(downMbps: 1, upMbps: 40,
+                                now: now.advanced(by: .seconds(2))) == .download)
+        #expect(selector.update(downMbps: 1, upMbps: 0.01,
+                                now: now.advanced(by: .seconds(3))) == .download)
     }
 
-    @Test("The direction holds for the dwell time instead of flickering")
-    func dwellPreventsFlicker() {
+    @Test("Upload exits after three seconds below the lower activity threshold")
+    func exitHysteresis() {
         var selector = ActiveDirectionSelector()
         var now = start
 
+        _ = selector.update(downMbps: 1, upMbps: 40, now: now)
+        now = now.advanced(by: .seconds(2))
         #expect(selector.update(downMbps: 1, upMbps: 40, now: now) == .upload)
-
-        // A download burst one second later must not immediately steal the display.
         now = now.advanced(by: .seconds(1))
-        #expect(selector.update(downMbps: 90, upMbps: 1, now: now) == .upload)
-
-        // Once the dwell time has passed, it follows the traffic.
-        now = now.advanced(by: .seconds(3))
-        #expect(selector.update(downMbps: 90, upMbps: 1, now: now) == .download)
+        #expect(selector.update(downMbps: 90, upMbps: 1, uploadActivityMbps: 0.07, now: now) == .upload)
+        now = now.advanced(by: .seconds(2))
+        #expect(selector.update(downMbps: 90, upMbps: 1, uploadActivityMbps: 0.07, now: now) == .upload)
+        now = now.advanced(by: .seconds(1))
+        #expect(selector.update(downMbps: 90, upMbps: 1, uploadActivityMbps: 0.07, now: now) == .download)
     }
 
-    @Test("A mixed transfer settles rather than oscillating every sample")
-    func mixedTrafficSettles() {
+    @Test("Activity between thresholds retains an established upload")
+    func middleBandKeepsUpload() {
         var selector = ActiveDirectionSelector()
-        var now = start
-        var switches = 0
-        var previous = selector.current
-
-        // Alternating dominance every sample, which is the worst case for readability.
-        for step in 0..<20 {
-            let down = step.isMultiple(of: 2) ? 50.0 : 5.0
-            let up = step.isMultiple(of: 2) ? 5.0 : 50.0
-            now = now.advanced(by: .seconds(1))
-            let direction = selector.update(downMbps: down, upMbps: up, now: now)
-            if direction != previous { switches += 1; previous = direction }
+        let now = start
+        _ = selector.update(downMbps: 100, upMbps: 1, now: now)
+        _ = selector.update(downMbps: 100, upMbps: 1, now: now.advanced(by: .seconds(2)))
+        for second in 3...10 {
+            #expect(selector.update(downMbps: 100, upMbps: 1, uploadActivityMbps: 0.1,
+                                    now: now.advanced(by: .seconds(second))) == .upload)
         }
-        // Twenty seconds of alternating traffic, capped by a three second dwell.
-        #expect(switches <= 7, "the readout changed \(switches) times in 20 s")
+    }
+
+    @Test("Idle immediately restores download and clears upload entry history")
+    func idleAndResetClearHistory() {
+        var selector = ActiveDirectionSelector()
+        let now = start
+        _ = selector.update(downMbps: 1, upMbps: 40, now: now)
+        _ = selector.update(downMbps: 1, upMbps: 40, now: now.advanced(by: .seconds(2)))
+        #expect(selector.current == .upload)
+        #expect(selector.update(downMbps: 0, upMbps: 0,
+                                now: now.advanced(by: .milliseconds(2100))) == .download)
+        #expect(selector.update(downMbps: 1, upMbps: 40,
+                                now: now.advanced(by: .seconds(3))) == .download)
+        selector.reset()
+        #expect(selector.update(downMbps: 1, upMbps: 40,
+                                now: now.advanced(by: .seconds(10))) == .download)
     }
 }

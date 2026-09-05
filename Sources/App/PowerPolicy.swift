@@ -2,16 +2,10 @@ import Foundation
 import IOKit.ps
 import SpeedCore
 
-/// Chooses the live-meter cadence from the power source.
-///
-/// App Nap throttles timers regardless of which API created them, so this is about
-/// being a good citizen rather than about accuracy: every rate divides by measured
-/// elapsed time, so a late tick still reports the correct number.
 @MainActor
 enum PowerPolicy {
-    static func currentCadence() -> LiveThroughputMonitor.Cadence {
-        if ProcessInfo.processInfo.isLowPowerModeEnabled { return .seconds(5) }
-        return isOnBattery() ? .seconds(2) : .seconds(1)
+    static func currentInterval(policy: LiveRefreshPolicy) -> Double {
+        policy.interval(isOnBattery: isOnBattery(), isLowPowerMode: ProcessInfo.processInfo.isLowPowerModeEnabled)
     }
 
     static func isOnBattery() -> Bool {
@@ -27,5 +21,39 @@ enum PowerPolicy {
             if state == kIOPSBatteryPowerValue { return true }
         }
         return false
+    }
+}
+
+/// Power-source and Low Power Mode changes are separate system events.
+@MainActor
+final class PowerPolicyObserver {
+    private var source: CFRunLoopSource?
+    private var observer: NSObjectProtocol?
+    private let onChange: @MainActor () -> Void
+
+    init(onChange: @escaping @MainActor () -> Void) {
+        self.onChange = onChange
+    }
+
+    func start() {
+        guard source == nil, observer == nil else { return }
+        source = IOPSNotificationCreateRunLoopSource({ context in
+            guard let context else { return }
+            let owner = Unmanaged<PowerPolicyObserver>.fromOpaque(context).takeUnretainedValue()
+            Task { @MainActor [weak owner] in owner?.onChange() }
+        }, Unmanaged.passUnretained(self).toOpaque())?.takeRetainedValue()
+        if let source { CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes) }
+        observer = NotificationCenter.default.addObserver(
+            forName: .NSProcessInfoPowerStateDidChange, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.onChange() }
+        }
+    }
+
+    func stop() {
+        if let source { CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes) }
+        source = nil
+        if let observer { NotificationCenter.default.removeObserver(observer) }
+        observer = nil
     }
 }

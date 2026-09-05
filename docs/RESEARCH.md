@@ -1,7 +1,6 @@
 # Platform research: verified facts for maintainers
 
-> Privacy note: personal signing, local paths and network metadata in this archived
-> document were generalized. Example values are not captured personal data.
+**2026-09-05 update:** The research below preserves the v1.0 observations and interpretations. Earlier claims that HTTP 403 proves a byte cap or rate limit are superseded: v1.1 received HTTP 403 for a 16 MiB download, and its cause remains unknown. The 50 MiB ceiling is a conservative client choice, not a published endpoint limit. Only HTTP 429 triggers the 15-minute backoff; HTTP 403 is an explicit refusal. See [current verification](VERIFICATION-1.1.md).
 
 Date of every fact below: 2026-09-04, unless a line says otherwise.
 
@@ -14,7 +13,7 @@ Every fact carries one of two tags.
 
 Ground truth, in order: the code in `Sources/`, `Tests/`, `project.yml` and `scripts/`; the measurements from the build session; the approved plan; the three research reports and their critique. Where the plan and the code disagree, the code wins and the disagreement is listed in the last section.
 
-Host used for every VERIFIED line: macOS 26.6.2 (25G83) on Apple Silicon, Xcode 26.6 (17F113), Swift 6.3.3, SDK 26.5, XcodeGen 2.45.4. Client location and ISP metadata are excluded from this public archive. Numbers that depend on the network are that link's numbers, not universal constants.
+The original probes ran on an Apple silicon development Mac with the Swift 6 and Xcode 26 toolchain. Network-dependent observations came from one connection and are not universal constants. Client identity, location and ISP details are omitted from this public report.
 
 ## 1. Cloudflare speed endpoints
 
@@ -29,7 +28,7 @@ All three endpoints are hardcoded in `Sources/SpeedCore/SpeedTest/Cloudflare/Clo
 ### 1.1 `/meta`
 
 - VERIFIED: A plain `GET /meta` returns HTTP 403 with body `{}`. A browser User-Agent alone does not help. Sending only `Referer: https://speed.cloudflare.com/` returns 200. Sending only `Origin: https://speed.cloudflare.com` also returns 200. One of the two headers is required and sufficient. The code sends both.
-- VERIFIED: Exact JSON shape with the Referer set: `{"hostname","clientIp","httpProtocol":"HTTP/1.1","asn":64512,"asOrganization":"Example ISP","country":"IN","city":"Example City","region":"Example Region","postalCode":"000000","latitude":"0.0","longitude":"0.0","colo":{"iata":"CCU","lat":22.654699,"lon":88.446701,"cca2":"IN","region":"Asia Pacific","city":"Kolkata"}}`.
+- VERIFIED: Metadata includes `hostname`, `clientIp`, `httpProtocol`, `asn`, `asOrganization`, client location fields and a `colo` object. The public test fixture uses synthetic values and a documentation-only IPv6 address; no captured client metadata is committed.
 - The fields are polymorphic relative to older write-ups: `asn` is a JSON number, `latitude` and `longitude` are strings, and `colo` is an object where older clients expect a bare IATA string. `CloudflareMeta.init(from:)` in `CloudflareMeta.swift` accepts `asn` as Int or String and `colo` as object or String. `Tests/SpeedCoreTests/CloudflareDecodingTests.swift` covers the live shape, the legacy shape, and the `{}` body.
 - The 403 gate is a bot-management rule, not a contract. It can change silently, and the failure is silent: an empty object decodes fine and the ISP display would go blank. `CloudflareMeta.ispDisplayName` degrades to `AS<asn>` and then to `"Unknown ISP"` rather than an empty string.
 - VERIFIED: The colo in `/cdn-cgi/trace` (MAA in one run) can differ from the colo that served `__down` and `/meta` (CCU) because they are separate anycast resolutions. `/cdn-cgi/trace` carries no ASN and no ISP name. The app does not use it.
@@ -62,7 +61,7 @@ All three endpoints are hardcoded in `Sources/SpeedCore/SpeedTest/Cloudflare/Clo
 
 - VERIFIED: speed.cloudflare.com negotiates HTTP/1.1 only (ALPN accepted `http/1.1`; `/meta` reports `"httpProtocol":"HTTP/1.1"`). A single 25 MiB stream reached 120 Mbps; four parallel streams summed to about 160 Mbps on the same link.
 - `URLSession` would coalesce concurrent requests to one origin onto a single HTTP/2 connection if the host ever switched protocols, and `httpMaximumConnectionsPerHost` defaults to 6. `CloudflareSpeedTest.makeSessionConfiguration` sets `httpMaximumConnectionsPerHost = 1`, `httpShouldUsePipelining = false`, `waitsForConnectivity = false`, `urlCache = nil`, `reloadIgnoringLocalAndRemoteCacheData`, `Accept-Encoding: identity`, and an honest `User-Agent`. Each download stream owns its own `URLSession` (`DownloadStream`), so N streams are N TCP connections by construction. The negotiated protocol from `URLSessionTaskMetrics.transactionMetrics.last?.networkProtocolName` is stored in `SpeedTestResult.networkProtocol` so a future change is visible.
-- VERIFIED (build session, one live run): 176.3 Mbps download headline (byte-weighted mean 158.7, p95 peak 292.1, 6 streams, 2048 KiB chunks, 205.5 MB moved), 137.9 Mbps upload (4 streams, 122.7 MB, every request server-confirmed via `cf-meta-upload-bytes`), ping 82.8 ms, jitter 15.6 ms, cfL4 TCP min RTT 32.1 ms, ISP "Example ISP", client Example City, colo Kolkata (CCU), protocol `http/1.1`, wall time 23.6 s.
+- VERIFIED (historical build session): a complete run produced download, upload and latency measurements, with upload bytes acknowledged by the server. Personal connection measurements and location metadata are excluded. Methodology 2 supersedes the v1.0 aggregation used for that run.
 
 ### 1.6 Terms and rate limits
 
@@ -119,8 +118,8 @@ The runner passes `["-c", "-s", "-M", "\(maxSeconds)"]` and appends `["-I", inte
 
 ### 2.5 Servers and the Apple config endpoint
 
-- VERIFIED: Server selection is Apple-only and not user-facing. Observed `test_endpoint` values across runs: `sgsin4-edge-fx-005.aaplimg.com`, `-028`, `-043`, `-014`. All are Apple CDN in Singapore for a client in India. Successive runs gave 89.5 and 162.8 Mbps download. Only `-C`, `-B` or `-r` change the server. The app labels Apple results `Apple CDN · <test_endpoint>` and never merges them into the Cloudflare columns.
-- VERIFIED: `GET https://mensura.cdn-apple.com/.well-known/nq` returns `{"version":1,"test_endpoint":"sgsin4-edge-fx-014.aaplimg.com","urls":{"small_download_url":"https://mensura.cdn-apple.com/api/v1/gm/small","large_download_url":"https://mensura.cdn-apple.com/api/v1/gm/large","upload_url":"https://mensura.cdn-apple.com/api/v1/gm/slurp"}}` with response headers `apple-client-asn: 64512` and `apple-client-asn-company: Example ISP`. This is a first-party, key-free ISP name source. The app does not use it today (see the deviations section).
+- VERIFIED: Server selection is Apple-only and not user-facing. Successive runs may select different Apple CDN endpoints and produce different results. The app labels Apple results `Apple CDN · <test_endpoint>` and keeps them separate from Cloudflare results.
+- VERIFIED: The Apple network-quality configuration endpoint returns a version, selected endpoint and small-download, large-download and upload URLs. Its headers can include client ASN and ISP metadata. The app does not use those metadata headers; raw responses are excluded from public fixtures.
 - VERIFIED: The raw endpoints work directly: `/api/v1/gm/small` returns 200 with 1 byte; `/api/v1/gm/large` is an endless stream (5,848,728 bytes in 3 s under `--max-time 3`); `POST /api/v1/gm/slurp` accepted 204,800 bytes with 200.
 
 ### 2.6 Sandbox and `Process()`
@@ -181,8 +180,8 @@ The runner passes `["-c", "-s", "-M", "\(maxSeconds)"]` and appends `["-I", inte
 
 ### 3.6 Signing, Swift 6 and build settings
 
-- VERIFIED: `security find-identity -v -p codesigning` lists exactly one identity, `-`, and no Developer ID.
-- VERIFIED (build session, bug 3): `LOCAL_CERT_ID` is the certificate's CN suffix, not the team. `DEVELOPMENT_TEAM` must be the certificate OU, `LOCAL_TEAM_ID`. `project.yml` carries `DEVELOPMENT_TEAM: LOCAL_TEAM_ID`; the plan's `LOCAL_CERT_ID` was wrong.
+- VERIFIED: A local Apple Development certificate was used for the original development build. Its personal identity and team are intentionally omitted; public builds use local overrides or ad-hoc signing.
+- VERIFIED (build session, bug 3): the certificate CN suffix is not the team ID. A local `DEVELOPMENT_TEAM` override must use the certificate OU.
 - VERIFIED (Swift.xcspec in Xcode 26.6): `SWIFT_DEFAULT_ACTOR_ISOLATION` is an enumeration `(nonisolated, MainActor)`, default `nonisolated`, and `MainActor` maps to `-default-isolation=MainActor`. `SWIFT_APPROACHABLE_CONCURRENCY` has `Condition = EFFECTIVE_SWIFT_VERSION in (4, 4.2, 5)` and is a no-op under `SWIFT_VERSION = 6.0`. Xcode's own new-project template still defaults to `SWIFT_VERSION = 5.0`.
 - VERIFIED (build session): the flag never appears in the xcodebuild log, so the plan's `grep -c -- '-default-isolation=MainActor'` check cannot pass. It was proven empirically instead: a probe calling a `@MainActor` function synchronously compiles in the app target and fails in `SpeedCore` with "call to main actor-isolated global function in a synchronous nonisolated context".
 - VERIFIED (build session, bug 4): `ENABLE_USER_SCRIPT_SANDBOXING: YES` blocked the static library's Objective-C header copy phase. `SpeedCore` sets `SWIFT_INSTALL_OBJC_HEADER: NO` and an empty `SWIFT_OBJC_INTERFACE_HEADER_NAME`.
@@ -300,7 +299,7 @@ The code wins in every row.
 
 | Topic | Plan | Code |
 |---|---|---|
-| `DEVELOPMENT_TEAM` | `LOCAL_CERT_ID` | `LOCAL_TEAM_ID` (the certificate OU; `LOCAL_CERT_ID` is the CN suffix). |
+| `DEVELOPMENT_TEAM` | Certificate CN suffix | Certificate OU, supplied only in a local override. |
 | Isolation flag check | `grep` the build log for `-default-isolation=MainActor` | The flag never appears in the log. Proven with a compile probe instead (section 3.6). |
 | Latency samples | `URLSessionTaskMetrics` `responseStart - requestStart`, drop samples with `isReusedConnection == false` | Wall-clock around `session.data(for:)`; only the first sample is treated as cold. No metrics delegate on the latency session. |
 | ISP fallback chain | `/meta`, then `__down` headers, then `mensura.cdn-apple.com/.well-known/nq`, then "Unknown ISP" | `/meta` only, degrading to `AS<asn>` and then "Unknown ISP" inside `CloudflareMeta.ispDisplayName`. No `ISPResolver`, no `AppleISPLookup`, no 10 minute cache. |

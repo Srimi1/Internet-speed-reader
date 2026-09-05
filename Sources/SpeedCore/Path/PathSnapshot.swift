@@ -12,11 +12,15 @@ public struct PathSnapshot: Sendable, Equatable {
         public let name: String
         public let index: Int
         public let kind: Kind
+        /// NWPath reports use by interface type, not by exact adapter. Same-type ties
+        /// therefore retain the path's order rather than claiming precise route binding.
+        public let isUsedByPath: Bool
 
-        public init(name: String, index: Int, kind: Kind) {
+        public init(name: String, index: Int, kind: Kind, isUsedByPath: Bool = false) {
             self.name = name
             self.index = index
             self.kind = kind
+            self.isUsedByPath = isUsedByPath
         }
 
         public enum Kind: String, Sendable, Equatable {
@@ -78,11 +82,13 @@ public enum ActiveInterfaceSelector {
 
         // A physical interface always wins: with a VPN up, en0 carries the real
         // internet traffic and the tunnel would double-count it.
-        if let physical = deduped.first(where: { $0.kind.isPhysical }) {
+        if let physical = deduped.first(where: { $0.kind.isPhysical && $0.isUsedByPath })
+            ?? deduped.first(where: { $0.kind.isPhysical }) {
             return physical
         }
         // Tunnel-only means a full-tunnel VPN, where the tunnel is the only place
         // the traffic is visible. The UI labels this as tunnel payload.
-        return deduped.first(where: { $0.kind == .tunnel }) ?? deduped.first
+        return deduped.first(where: { $0.kind == .tunnel && $0.isUsedByPath })
+            ?? deduped.first(where: { $0.kind == .tunnel }) ?? deduped.first
     }
 }

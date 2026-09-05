@@ -99,6 +99,11 @@ public struct ConnectivityStateMachine: Sendable, Equatable {
         // Suspended swallows everything except the events that lift the suspension.
         if case let .suspended(reason) = state {
             switch (event, reason) {
+            case (.willSleep, .speedTest):
+                // Sleep takes precedence over test suspension. Its delayed cleanup
+                // must not resume probes while the machine is asleep.
+                state = .unknown
+                return handle(.willSleep, now: now, wallClock: wallClock)
             case (.didWake, .sleep):
                 return resume(now: now, grace: config.wakeGrace)
             case (.speedTestFinished(let success), .speedTest):
