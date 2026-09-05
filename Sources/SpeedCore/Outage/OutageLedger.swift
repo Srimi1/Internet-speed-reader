@@ -128,6 +128,8 @@ public actor OutageLedger {
     public func clear() {
         records.removeAll()
         persist()
+        // Drop the .bak sidecar too, so clearing the log leaves no stale records behind.
+        store.removeBackup()
     }
 
     private func persist() {

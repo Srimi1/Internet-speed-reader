@@ -231,5 +231,8 @@ final class SpeedTestController {
         history.removeAll()
         latestResult = nil
         try? store?.save([])
+        // Also drop the .bak sidecar so a clear leaves no provider/location/server
+        // metadata behind from an earlier schema bump or corrupt-file recovery.
+        store?.removeBackup()
     }
 }

@@ -53,8 +53,18 @@ public struct AtomicJSONStore<Record: Codable & Sendable>: Sendable {
     }
 
     private func moveAside() throws {
-        let backup = url.appendingPathExtension("bak")
-        try? FileManager.default.removeItem(at: backup)
-        try FileManager.default.moveItem(at: url, to: backup)
+        try? FileManager.default.removeItem(at: backupURL)
+        try FileManager.default.moveItem(at: url, to: backupURL)
+    }
+
+    private var backupURL: URL { url.appendingPathExtension("bak") }
+
+    /// Deletes the moved-aside `.bak` sidecar, if one exists. `moveAside` leaves a copy
+    /// of the old records behind on a schema bump or a corrupt-file recovery, and those
+    /// copies carry the same fields as the live file (for history: provider, location and
+    /// server metadata). The user-facing "Clear" actions call this so clearing actually
+    /// removes everything rather than leaving stale data in the sidecar.
+    public func removeBackup() {
+        try? FileManager.default.removeItem(at: backupURL)
     }
 }

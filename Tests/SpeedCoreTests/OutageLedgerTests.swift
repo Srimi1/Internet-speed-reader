@@ -72,4 +72,23 @@ struct OutageLedgerTests {
         #expect(store.load().isEmpty)
         #expect(FileManager.default.fileExists(atPath: url.appendingPathExtension("bak").path))
     }
+
+    @Test("Clearing the ledger also removes the moved-aside .bak sidecar")
+    func clearRemovesBackup() async throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("isr-tests-\(UUID().uuidString)")
+            .appendingPathComponent("outages.json")
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        // A schema bump leaves an old copy in the sidecar carrying the same fields.
+        try #"{"version": 99, "records": []}"#.data(using: .utf8)!.write(to: url)
+
+        let store = AtomicJSONStore<OutageRecord>(url: url, currentVersion: 1)
+        let ledger = OutageLedger(store: store, heartbeatStore: MemoryHeartbeatStore())
+        await ledger.load()
+        let backup = url.appendingPathExtension("bak").path
+        #expect(FileManager.default.fileExists(atPath: backup))
+
+        await ledger.clear()
+        #expect(!FileManager.default.fileExists(atPath: backup))
+    }
 }
